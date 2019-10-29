@@ -61,42 +61,6 @@ def split_dataset(dataset, frac):
     return train, validation
 
 
-# def build_training_tfrecord(df, save_path, c, k, query_size, size):
-#     """
-#     构建训练的tfrecord文件
-#
-#     Args:
-#         size: 文件包含多少条数据
-#         save_path:保存的路径
-#         df:数据集dataframe，包含class列和text列
-#         c:每轮有多少个类
-#         k:每个类有多少个样本
-#         query_size:每轮训练的每个类预测多少个样本
-#
-#     Notes:
-#         一轮训练需要的样本数为c*k+c*query_size
-#     Returns:
-#
-#     """
-#     classes = df["class"].drop_duplicates()
-#     with tf.python_io.TFRecordWriter(save_path) as tfrecord_wrt:
-#         for i in range(size):
-#             selected_classes = classes.sample(c).to_list()
-#             for selected_class in selected_classes:
-#                 selected_support_samples = df[df["class"] == selected_classes].sample(k)
-#                 selected_query_sample = df[df["class"] == selected_classes].sample(query_size)
-#
-#             df[df['class'].isin(classes.sample(2))].sample(5)
-#             ids = tf.train.FeatureList(feature=
-#                                        [tf.train.Feature(int64_list=tf.train.Int64List(value=[]),])
-#             tf.train.Example()
-#             tf.train.FeatureLists
-#             pass
-
-def split_train_test(dataset, class_info, training_set_class_num=15):
-    pass
-
-
 def log_array(array, name):
     log.info(f"{name}\nshape: {np.array(array).shape}\ndtype: {np.array(array).dtype}\n\n")
 
@@ -197,7 +161,7 @@ class OnlineShoppingData():
         support_set_df = pd.DataFrame()
         support_text = []
         for class_index, one_class in enumerate(self.test_set_class["class"]):
-            class_sample=self.test_set[self.test_set["class"] == one_class]
+            class_sample = self.test_set[self.test_set["class"] == one_class]
             class_support_sample = class_sample.sample(self.k)
             # 选择支撑集
             class_support_sample["class_index"] = class_index
