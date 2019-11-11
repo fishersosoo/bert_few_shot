@@ -229,7 +229,7 @@ def generate_data(input_csv, output_dir):
     with open(os.path.join(output_dir, "data_param.json"), "w") as fp:
         json.dump(data.params(), fp)
     data.choose_train_test_class(15)
-    support_set_text, query_set_text, query_set_label = data.generate_training_data(training_iter_num=10)
+    support_set_text, query_set_text, query_set_label = data.generate_training_data(training_iter_num=100)
     check_dir(training_dir)
     save_list(support_set_text, os.path.join(training_dir, "support_text"))
     save_list(query_set_text, os.path.join(training_dir, "query_text"))

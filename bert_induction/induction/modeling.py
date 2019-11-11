@@ -499,35 +499,33 @@ def squash(vector, epsilon=1e-9):
 
 
 def induction(sample_prediction_vector,
+              class_vector_len,
               iter_routing=3,
               initializer_range=0.02
               ):
     """
 
     Args:
+        class_vector_len: scalar 表示类向量的维度
         sample_prediction_vector: float tensor [batch_size, c, k, seq_length]
         iter_routing:
         initializer_range:
 
     Returns:
-        class vector. float tensor [batch_size, c,  seq_len]
+        class vector. float tensor [batch_size, c,  class_vector_len]
     """
     tf.logging.info(sample_prediction_vector)
     batch_size, c, k, seq_length = get_shape_list(sample_prediction_vector, expected_rank=4)
-    transformation_matrix = tf.get_variable(
-        name="transformation_matrix",
-        shape=[seq_length, seq_length],
-        initializer=create_initializer(initializer_range))
-    e = sample_prediction_vector  # [batch_size, c, k, seq_len]
     b = tf.constant(np.zeros([batch_size, c, 1, k], dtype=np.float32), dtype=tf.float32)
-    e_stopped = tf.stop_gradient(e, name='stop_gradient')
+    e = sample_prediction_vector  # [batch_size, c, k, seq_len]
+    e_hat = tf.layers.dense(e, seq_length)  # [batch_size, c, k, seq_len]
+    e_hat_stopped = tf.stop_gradient(e_hat, name='stop_gradient')
 
     for r_iter in range(iter_routing):
         with tf.variable_scope("iter_" + str(iter_routing)):
             d = tf.nn.softmax(b, axis=-1)
 
             if r_iter != iter_routing - 1:  # 前面的迭代，不需要梯度下降
-                e_hat_stopped = transformation(e_stopped, transformation_matrix)  # [batch_size, c, k, seq_len]
                 c_hat = tf.matmul(d, e_hat_stopped)  # [batch_size, c, 1, seq_len]
                 c = squash(c_hat)  # [batch_size, c, 1, seq_len]
                 # 更新b
@@ -537,7 +535,6 @@ def induction(sample_prediction_vector,
                 e_product_c = tf.expand_dims(e_product_c, -2)  # [batch_size, c, 1, k]
                 b += e_product_c  # [batch_size, c, 1, k]
             if r_iter == iter_routing - 1:  # 最后的迭代，需要梯度下降
-                e_hat = transformation(e, transformation_matrix)
                 c_hat = tf.matmul(d, e_hat)  # [batch_size, c, 1, seq_len]
                 c = squash(c_hat)  # [batch_size, c, 1, seq_len]
                 c = tf.squeeze(c, [-2])  # [batch_size, c,  seq_len]
@@ -583,7 +580,7 @@ def relation_model(class_vector,
 
     g = tf.reduce_sum(tf.multiply(class_vector_extend, transformed_vector), axis=-1,
                       keepdims=False)  # [batch_size, query_size, c, h]
-    v=tf.nn.relu(g)
+    v = tf.nn.relu(g)
     # # gk \
     # #         query_input_extend = tf.expand_dims(query_input, 2)  # [batch_size, query_size, 1, seq_len]
     # query_input_extend = tf.expand_dims(query_input_extend, -1)  # [batch_size, query_size, 1, seq_len, 1]
@@ -606,7 +603,7 @@ def relation_model(class_vector,
     # v = tf.squeeze(v, -1)  # [batch_size, query_size, c, h]
 
     # v_T = tf.transpose(v, [0, 1, 2, 4, 3])  # [batch_size, query_size, c, 1, h]
-    relation_score=tf.layers.dense(v, 1, activation=tf.nn.sigmoid) # [batch_size, query_size, c, 1]
+    relation_score = tf.layers.dense(v, 1, activation=tf.nn.sigmoid)  # [batch_size, query_size, c, 1]
     # w_r = tf.get_variable(
     #     name="W_r",
     #     shape=[1, 1, 1, 1, h],
@@ -645,7 +642,7 @@ def relation_model(class_vector,
     # b_r_expended = tf.tile(b_r_expended, [batch_size, query_size, 1])  # [batch_size, query_size, c]
     # final_score = tf.nn.sigmoid(
     #     tf.squeeze(tf.matmul(w_r_expended, tf.expand_dims(relation_score, -1)), [-1]) + b_r_expended)
-    final_score=tf.squeeze(relation_score)
+    final_score = tf.squeeze(relation_score)
     return final_score
 
 
@@ -703,7 +700,8 @@ class InductionModel():
             with tf.variable_scope("routing"):
                 self.class_vector = induction(support_input)
         with tf.variable_scope(scope, default_name="relation"):
-            self.relation_score = relation_model(class_vector=self.class_vector, query_input=query_input) # [batch_size, query_size, c]
+            self.relation_score = relation_model(class_vector=self.class_vector,
+                                                 query_input=query_input)  # [batch_size, query_size, c]
         with tf.variable_scope(scope, default_name="loss"):
             self.loss = tf.losses.mean_squared_error(query_label, self.relation_score)
 
@@ -1087,5 +1085,5 @@ if __name__ == "__main__":
                do_predict=True,
                iterations_per_loop=100,
                learning_rate=5e-3,
-               use_cpu=False
+               use_cpu=True
                )
