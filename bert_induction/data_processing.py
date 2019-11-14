@@ -62,7 +62,11 @@ def split_dataset(dataset, frac):
 
 
 def log_array(array, name):
-    log.info(f"{name}\nshape: {np.array(array).shape}\ndtype: {np.array(array).dtype}\n\n")
+    log.info("{name}\nshape: {shape}\ndtype: {dtype}\n\n".format(
+        name=name,
+        shape=np.array(array).shape,
+        dtype=np.array(array).dtype
+    ))
 
 
 class OnlineShoppingData():
@@ -80,7 +84,7 @@ class OnlineShoppingData():
         Returns:
             path: 数据文件路径
         """
-        dataset = pd.read_csv(path)
+        dataset = pd.read_csv(path, encoding="utf-8")
         cats = dataset["cat"].drop_duplicates()
         labels = dataset["label"].drop_duplicates()
         info = {"class": [], "cat": [], "label": []}
@@ -96,7 +100,7 @@ class OnlineShoppingData():
         return dataset, class_info
 
     def __init__(self, input_csv, c=2, k=5, query_size_per_class=5):
-        log.info(f"{c * (k + query_size_per_class)} examples per training iter")
+        log.info("{num} examples per training iter".format(num=c * (k + query_size_per_class)))
         self.input_csv = input_csv
         self.dataset, self.class_info = self._process_dataset(input_csv)
         self.c = c
@@ -177,7 +181,7 @@ class OnlineShoppingData():
                 query_set_df = selected_sample
             else:
                 query_set_df = query_set_df.append(selected_sample, ignore_index=True)
-        print(query_set_df)
+        # print(query_set_df)
         query_set_df = query_set_df.sample(frac=1.0)
         query_set_text = query_set_df["review"].to_list()
 
@@ -212,9 +216,8 @@ class OnlineShoppingData():
 
 def save_list(data, fp):
     array = np.array(data)
-    log.info(f"saving {array.dtype} array with shape {array.shape} to {fp}")
+    log.info("saving {dtype} array with shape {shape} to {fp}".format(dtype=array.dtype, shape=array.shape, fp=fp))
     np.save(fp, array)
-    # array.dump(fp)
 
 
 def check_dir(fp):
@@ -246,5 +249,7 @@ def generate_data(input_csv, output_dir):
 
 
 if __name__ == '__main__':
-    generate_data(input_csv=r"Z:\bert_few_shot\data\online_shopping_10_cats.csv",
-                  output_dir=r"Z:\bert_few_shot\data\output")
+    print("数据处理")
+    exit(0)
+    generate_data(input_csv=r"/home/bert_few_shot/data/online_shopping_10_cats.csv",
+                  output_dir=r"/home/bert_few_shot/data/output")

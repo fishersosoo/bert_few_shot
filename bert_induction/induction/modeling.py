@@ -117,19 +117,19 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
             iter_query_input_ids = []
             iter_query_input_mask = []
             for text_id, one_text in enumerate(support_input_text[iter_index].reshape(-1)):
-                # one_text = tokenization.convert_to_unicode(one_text)
+                one_text = tokenization.convert_to_unicode(one_text)
                 ids, mask = convert_to_ids(one_text, max_seq_length, tokenizer)
                 if iter_index == 0 or iter_index == training_iter - 1:
-                    tf.logging.info(f"support text {text_id}:{one_text}\n ids:{ids}\n mask:{mask}")
+                    tf.logging.info(f"support text {text_id}:{one_text.encode('utf-8')}\n ids:{ids}\n mask:{mask}")
                 iter_support_input_ids.append(ids)
                 iter_support_input_mask.append(mask)
                 input_text.write_support_text(iter_index, int(text_id / k), one_text)
             for one_text in query_input_text[iter_index].reshape(-1):
                 input_text.write_query_text(iter_index, one_text)
-                # one_text = tokenization.convert_to_unicode(one_text)
+                one_text = tokenization.convert_to_unicode(one_text)
                 ids, mask = convert_to_ids(one_text, max_seq_length, tokenizer)
                 if iter_index == 0 or iter_index == training_iter - 1:
-                    tf.logging.info(f"query text:{one_text}\n ids:{ids}\n mask:{mask}")
+                    tf.logging.info(f"query text:{one_text.encode('utf-8')}\n ids:{ids}\n mask:{mask}")
                 iter_query_input_ids.append(ids)
                 iter_query_input_mask.append(mask)
             # 保存时候，所有数据都要flat到 1 维
@@ -497,7 +497,17 @@ def squash(vector, epsilon=1e-9):
     vec_squashed = scalar_factor * vector  # element-wise [batch_size, c, 1, seq_len]
     return vec_squashed
 
+def induction_reduce_sum(sample_prediction_vector):
+    """
+    简单地将样本向量相加作为
+    Args:
+        sample_prediction_vector:
 
+    Returns:
+        class vector. float tensor [batch_size, c,  class_vector_len]
+
+    """
+    pass
 def induction(sample_prediction_vector,
               class_vector_len,
               iter_routing=3,
@@ -516,7 +526,7 @@ def induction(sample_prediction_vector,
     """
     tf.logging.info(sample_prediction_vector)
     batch_size, c, k, seq_length = get_shape_list(sample_prediction_vector, expected_rank=4)
-    b = tf.constant(np.zeros([batch_size, c, 1, k], dtype=np.float32), dtype=tf.float32)
+    b = tf.constant(np.ones([batch_size, c, 1, k], dtype=np.float32), dtype=tf.float32)
     e = sample_prediction_vector  # [batch_size, c, k, seq_len]
     e_hat = tf.layers.dense(e, seq_length)  # [batch_size, c, k, seq_len]
     e_hat_stopped = tf.stop_gradient(e_hat, name='stop_gradient')
@@ -526,8 +536,8 @@ def induction(sample_prediction_vector,
             d = tf.nn.softmax(b, axis=-1)
 
             if r_iter != iter_routing - 1:  # 前面的迭代，不需要梯度下降
-                c_hat = tf.matmul(d, e_hat_stopped)  # [batch_size, c, 1, seq_len]
-                c = squash(c_hat)  # [batch_size, c, 1, seq_len]
+                c_hat_stopped = tf.matmul(d, e_hat_stopped)  # [batch_size, c, 1, seq_len]
+                c = squash(c_hat_stopped)  # [batch_size, c, 1, seq_len]
                 # 更新b
                 # b=b + e_hat * c
                 c_expend = tf.tile(c, [1, 1, k, 1])  # [batch_size, c, k, seq_len]
@@ -698,7 +708,7 @@ class InductionModel():
         # _, query_size, _ = get_shape_list(support_input, expected_rank=3)
         with tf.variable_scope(scope, default_name="induction"):
             with tf.variable_scope("routing"):
-                self.class_vector = induction(support_input)
+                self.class_vector = induction(support_input, 768)
         with tf.variable_scope(scope, default_name="relation"):
             self.relation_score = relation_model(class_vector=self.class_vector,
                                                  query_input=query_input)  # [batch_size, query_size, c]
@@ -942,7 +952,7 @@ def classifier(vocab_file,
             per_host_input_for_training=is_per_host))
     if use_cpu:
         run_config = run_config.replace(session_config=tf.ConfigProto(log_device_placement=True,
-                                                                      device_count={'GPU': 0, 'CPU': 4}))
+                                                                      device_count={'GPU': 1}))
     example_nums = None
     num_train_steps = None
     num_warmup_steps = None
@@ -1063,27 +1073,36 @@ def classifier(vocab_file,
 
 
 if __name__ == "__main__":
+    import logging
+
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
     # tokenizer = tokenization.FullTokenizer(vocab_file=r"Z:\bert_few_shot\models\chinese_L-12_H-768_A-12\vocab.txt")
     # print(write_example(fp_in=r"Z:\bert_few_shot\data\output\train",
     #                     fp_out=r"Z:\bert_few_shot\data\output\train\train.tf_record",
     #                     tokenizer=tokenizer,
     #                     max_seq_length=32))
-    model_config_fp = r"Z:\bert_few_shot\models\test\model_config.json"
+    project_path = "/home/bert_few_shot"
+    pre_train_model = "chinese_L-12_H-768_A-12"
+    model_path = os.path.join(project_path, "models")
+    model_config_fp = os.path.join(model_path, "test", "model_config.json")
     with open(model_config_fp, 'w') as model_config_fd:
         json.dump(ModelConfig(c=2, k=5, query_size=10).to_dict(), model_config_fd)
-    classifier(vocab_file=r"Z:\bert_few_shot\models\chinese_L-12_H-768_A-12\vocab.txt",
-               data_dir=r"Z:\bert_few_shot\data\output",
+    classifier(vocab_file=os.path.join(model_path, pre_train_model, "vocab.txt"),
+               data_dir=os.path.join(project_path, "data", "output"),
                config_file=model_config_fp,
-               bert_config_file=r"Z:\bert_few_shot\models\chinese_L-12_H-768_A-12\bert_config.json",
-               init_checkpoint=r"Z:\bert_few_shot\models\chinese_L-12_H-768_A-12\bert_model.ckpt",
-               train_batch_size=2,
+               bert_config_file=os.path.join(model_path, pre_train_model, "bert_config.json"),
+               init_checkpoint=os.path.join(model_path, pre_train_model, "bert_model.ckpt"),
+               # init_checkpoint=os.path.join(model_path, "test", "model.ckpt-250"),
+
+               train_batch_size=4,
                eval_batch_size=1,
                predict_batch_size=2,
                num_train_epochs=10.0,
-               output_dir=r"Z:\bert_few_shot\models\test",
+               output_dir=os.path.join(model_path, "test"),
                # do_train=True,
                do_predict=True,
                iterations_per_loop=100,
-               learning_rate=5e-3,
-               use_cpu=True
+               learning_rate=5e-4,
+               use_cpu=False
                )
