@@ -275,11 +275,9 @@ class ShoppingDataProcessor(DataProcessor):
         return self._create_examples(df, "test")
 
     def _create_examples(self, df, set_type):
-        df=df.sample(frac=1.)
-        out_df=pd.DataFrame()
-        out_df["text"]=df["review"].astype(str)
-        out_df["label"]=df["class"].astype(str)
-        out_df.to_csv('/home/bert_few_shot/data/test/{set_type}.txt'.format(set_type=set_type),encoding="utf-8",index=False)
+        df=df.sample(frac=1.0).reset_index(drop=True)
+        text_fd=open(r'Z:\bert_few_shot\data\test\{set_type}.txt'.format(set_type=set_type),'w',encoding="utf-8")
+        texts=[]
         examples = []
         for i, row in df.iterrows():
             # if np.random.rand() < 0.8:
@@ -290,8 +288,11 @@ class ShoppingDataProcessor(DataProcessor):
                 label = "0"
             else:
                 label = tokenization.convert_to_unicode(str(row["class"]))
+            texts.append(text_a)
             examples.append(InputExample(guid=guid, text_a=text_a, label=label))
-
+        text_fd.write('\n'.join(texts))
+        text_fd.flush()
+        text_fd.close()
         return examples
 
 
@@ -880,6 +881,7 @@ def main(_):
           num_shards=FLAGS.num_tpu_cores,
           per_host_input_for_training=is_per_host))
   run_config = run_config.replace(session_config=tf.ConfigProto(log_device_placement=False,gpu_options=tf.GPUOptions(allow_growth=True)))
+                                                                # device_count={'GPU': 0}))
 
   train_examples = None
   num_train_steps = None
@@ -1014,7 +1016,7 @@ def main(_):
         output_line = "\t".join(
             str(class_probability)
             for class_probability in probabilities) + "\n"
-        output_line=str(label)+"\n"
+        output_line=str(label)  + "\n"
         writer.write(output_line)
         num_written_lines += 1
     assert num_written_lines == num_actual_predict_examples
