@@ -228,11 +228,11 @@ def check_dir(fp):
 def generate_data(input_csv, output_dir):
     check_dir(output_dir)
     training_dir = os.path.join(output_dir, "train")
-    data = OnlineShoppingData(input_csv, c=2, k=5, query_size_per_class=5)
+    data = OnlineShoppingData(input_csv, c=2, k=5, query_size_per_class=16)
     with open(os.path.join(output_dir, "data_param.json"), "w") as fp:
         json.dump(data.params(), fp)
     data.choose_train_test_class(15)
-    support_set_text, query_set_text, query_set_label = data.generate_training_data(training_iter_num=100)
+    support_set_text, query_set_text, query_set_label = data.generate_training_data(training_iter_num=4000)
     check_dir(training_dir)
     save_list(support_set_text, os.path.join(training_dir, "support_text"))
     save_list(query_set_text, os.path.join(training_dir, "query_text"))
@@ -240,7 +240,7 @@ def generate_data(input_csv, output_dir):
 
     test_dir = os.path.join(output_dir, "predict")
     check_dir(test_dir)
-    support, query_text, query_label, query_set_df, support_set_df = data.generate_test_data(sample_per_class=100)
+    support, query_text, query_label, query_set_df, support_set_df = data.generate_test_data(sample_per_class=300)
     query_set_df.to_csv(os.path.join(test_dir, "query_set.csv"), index=False)
     support_set_df.to_csv(os.path.join(test_dir, "support_set.csv"), index=False)
     save_list(support, os.path.join(test_dir, "support_text"))
@@ -249,7 +249,5 @@ def generate_data(input_csv, output_dir):
 
 
 if __name__ == '__main__':
-    print("数据处理")
-    exit(0)
     generate_data(input_csv=r"/home/bert_few_shot/data/online_shopping_10_cats.csv",
                   output_dir=r"/home/bert_few_shot/data/output")

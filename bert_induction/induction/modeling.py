@@ -106,10 +106,10 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
 
         training_iter, c, k = support_input_text.shape
         _training_iter, query_size = query_input_text.shape
-        tf.logging.info(f"support input:{support_input_text.shape} ")
-        tf.logging.info(f"query input:{query_input_text.shape} ")
+        tf.logging.info("support input:{shape} ".format(shape=support_input_text.shape))
+        tf.logging.info("query input:{shape} ".format(shape=query_input_text.shape))
         input_text = InputText(c, k, query_size)
-        tf.logging.info(f"{support_input_text[2].shape}")
+        tf.logging.info(str(support_input_text[2].shape))
         for iter_index in range(training_iter):
             features = collections.OrderedDict()
             iter_support_input_ids = []
@@ -120,23 +120,34 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
                 one_text = tokenization.convert_to_unicode(one_text)
                 ids, mask = convert_to_ids(one_text, max_seq_length, tokenizer)
                 if iter_index == 0 or iter_index == training_iter - 1:
-                    tf.logging.info(f"support text {text_id}:{one_text.encode('utf-8')}\n ids:{ids}\n mask:{mask}")
+                    tf.logging.info("support text {text_id}:{text}\n ids:{ids}\n mask:{mask}".format(
+                        text_id=text_id,
+                        text=one_text,
+                        mask=mask,
+                        ids=ids
+                    ))
                 iter_support_input_ids.append(ids)
                 iter_support_input_mask.append(mask)
                 input_text.write_support_text(iter_index, int(text_id / k), one_text)
-            for one_text in query_input_text[iter_index].reshape(-1):
-                input_text.write_query_text(iter_index, one_text)
-                one_text = tokenization.convert_to_unicode(one_text)
-                ids, mask = convert_to_ids(one_text, max_seq_length, tokenizer)
+            for text_id,one_query_text in enumerate(query_input_text[iter_index]):
+                input_text.write_query_text(iter_index, one_query_text)
+                one_query_text = tokenization.convert_to_unicode(one_query_text)
+                query_ids, mask = convert_to_ids(one_query_text, max_seq_length, tokenizer)
                 if iter_index == 0 or iter_index == training_iter - 1:
-                    tf.logging.info(f"query text:{one_text.encode('utf-8')}\n ids:{ids}\n mask:{mask}")
-                iter_query_input_ids.append(ids)
+                    tf.logging.info("query text:{text}\n ids:{ids}\n mask:{mask}".format(
+                        text=one_query_text,
+                        ids=query_ids,
+                        mask=mask
+                    ))
+                    if query_label is not None:
+                        tf.logging.info("label:{label}".format(label=query_label[iter_index][text_id]))
+                iter_query_input_ids.append(query_ids)
                 iter_query_input_mask.append(mask)
             # 保存时候，所有数据都要flat到 1 维
             features["support_input_ids"] = tf.train.Feature(
                 int64_list=tf.train.Int64List(value=np.array(iter_support_input_ids).reshape(-1)))
             features["support_input_mask"] = tf.train.Feature(
-                int64_list=tf.train.Int64List(value=np.array(iter_query_input_mask).reshape(-1)))
+                int64_list=tf.train.Int64List(value=np.array(iter_support_input_mask).reshape(-1)))
             features["query_input_ids"] = tf.train.Feature(
                 int64_list=tf.train.Int64List(value=np.array(iter_query_input_ids).reshape(-1)))
             features["query_input_mask"] = tf.train.Feature(
@@ -178,11 +189,11 @@ def file_based_input_fn_builder(input_file, config, max_seq_length, is_training,
         example = tf.parse_single_example(record, name_to_features)
         # tf.Example only supports tf.int64, but the TPU only supports tf.int32.
         # So cast all int64 to int32.
-        for name in list(example.keys()):
-            t = example[name]
-            if t.dtype == tf.int64:
-                t = tf.to_int32(t)
-            example[name] = t
+        # for name in list(example.keys()):
+        #     t = example[name]
+        #     if t.dtype == tf.int64:
+        #         t = tf.to_int32(t)
+        #     example[name] = t
         return example
 
     def input_fn(params):
@@ -190,8 +201,9 @@ def file_based_input_fn_builder(input_file, config, max_seq_length, is_training,
 
         dataset = tf.data.TFRecordDataset(input_file)
         if is_training:
+            dataset = dataset.shuffle(buffer_size=1000)
             dataset = dataset.repeat()
-            dataset = dataset.shuffle(buffer_size=100)
+
 
         dataset = dataset.apply(tf.contrib.data.map_and_batch(
             lambda record: _decode_record(record),
@@ -511,7 +523,6 @@ def induction_reduce_sum(sample_prediction_vector):
 def induction(sample_prediction_vector,
               class_vector_len,
               iter_routing=3,
-              initializer_range=0.02
               ):
     """
 
@@ -524,18 +535,19 @@ def induction(sample_prediction_vector,
     Returns:
         class vector. float tensor [batch_size, c,  class_vector_len]
     """
-    tf.logging.info(sample_prediction_vector)
+    # tf.logging.info(sample_prediction_vector)
     batch_size, c, k, seq_length = get_shape_list(sample_prediction_vector, expected_rank=4)
-    b = tf.constant(np.ones([batch_size, c, 1, k], dtype=np.float32), dtype=tf.float32)
+    b = tf.constant(np.zeros([batch_size, c, 1, k], dtype=np.float32), dtype=tf.float32)
     e = sample_prediction_vector  # [batch_size, c, k, seq_len]
     e_hat = tf.layers.dense(e, seq_length)  # [batch_size, c, k, seq_len]
-    e_hat_stopped = tf.stop_gradient(e_hat, name='stop_gradient')
 
+    e_hat_stopped = tf.stop_gradient(e_hat, name='stop_gradient')
+    # e_hat_stopped=e_hat
     for r_iter in range(iter_routing):
         with tf.variable_scope("iter_" + str(iter_routing)):
             d = tf.nn.softmax(b, axis=-1)
 
-            if r_iter != iter_routing - 1:  # 前面的迭代，不需要梯度下降
+            if r_iter < iter_routing - 1:  # 前面的迭代，不需要梯度下降
                 c_hat_stopped = tf.matmul(d, e_hat_stopped)  # [batch_size, c, 1, seq_len]
                 c = squash(c_hat_stopped)  # [batch_size, c, 1, seq_len]
                 # 更新b
@@ -556,7 +568,7 @@ def induction(sample_prediction_vector,
 
 def relation_model(class_vector,
                    query_input,
-                   h=100,
+                   h=2,
                    initializer_range=0.02
                    ):
     """
@@ -571,88 +583,28 @@ def relation_model(class_vector,
     """
     batch_size, c, seq_len = get_shape_list(class_vector)
     batch_size, query_size, seq_len = get_shape_list(query_input)
-    relation_matrix = tf.get_variable(
-        name="relation_matrix",
-        shape=[1, 1, h, seq_len, seq_len],
-        initializer=create_initializer(initializer_range))
+
     transformed_vector = []
+
     for k in range(h):
         transformed_vector_k = tf.layers.dense(query_input, seq_len, use_bias=False,
-                                               name=f"M_{k}")  # [batch_size, query_size, seq_len]
+                                               name="M_{k}".format(k=k))  # [batch_size, query_size, seq_len]
         transformed_vector.append(transformed_vector_k)
-    transformed_vector = tf.expand_dims(tf.stack(transformed_vector, axis=2),
+    stacked=tf.stack(transformed_vector, axis=2)  # [batch_size, query_size, h, seq_len]
+    transformed_vector = tf.expand_dims(stacked,
                                         2)  # [batch_size, query_size, 1, h, seq_len]
     transformed_vector = tf.tile(transformed_vector, [1, 1, c, 1, 1])  # [batch_size, query_size, c, h, seq_len]
 
     # class_vector: [batch_size, c, seq_len] -> [batch_size, query_size, c, h, seq_len]
-    class_vector_extend = tf.expand_dims(tf.expand_dims(class_vector, 1), -2)
+    class_vector_extend=tf.expand_dims(class_vector, 1) # [batch_size, 1, c, seq_len]
+    class_vector_extend = tf.expand_dims(class_vector_extend, -2) # [batch_size, 1, c, 1, seq_len]
     class_vector_extend = tf.tile(class_vector_extend, [1, query_size, 1, h, 1])
 
     g = tf.reduce_sum(tf.multiply(class_vector_extend, transformed_vector), axis=-1,
                       keepdims=False)  # [batch_size, query_size, c, h]
-    v = tf.nn.relu(g)
-    # # gk \
-    # #         query_input_extend = tf.expand_dims(query_input, 2)  # [batch_size, query_size, 1, seq_len]
-    # query_input_extend = tf.expand_dims(query_input_extend, -1)  # [batch_size, query_size, 1, seq_len, 1]
-    # query_input_extend = tf.tile(query_input_extend, [1, 1, h, 1, 1])  # [batch_size, query_size, h, seq_len, 1]
-    # relation_matrix_expended = tf.tile(
-    #     query_input_extend,
-    #     [batch_size, query_size, 1, 1, 1])  # [batch_size, query_size, h, seq_len, seq_len]
-    # transformed_vector = tf.matmul(relation_matrix_expended,
-    #                                query_input_extend)  # [batch_size, query_size, h, seq_len, 1]
-    # transformed_vector = tf.expand_dims(transformed_vector, 2)  # [batch_size, query_size, 1, h, seq_len, 1]
-    # transformed_vector = tf.tile(transformed_vector, [1, 1, c, 1, 1, 1])  # [batch_size, query_size, c, h, seq_len, 1]
-    #
-    # # class_vector: [batch_size, c, seq_len] -> [batch_size, query_size, c, 1, seq_len]
-    # class_vector_extend = tf.expand_dims(class_vector, 1)  # [batch_size, 1, c, seq_len]
-    # class_vector_extend = tf.expand_dims(class_vector_extend, -2)  # [batch_size, 1, c, 1, seq_len]
-    # class_vector_extend = tf.tile(class_vector_extend,
-    #                               [1, query_size, 1, h, 1, 1])  # [batch_size, query_size, c, h, 1, seq_len]
-    # v = tf.matmul(class_vector_extend, transformed_vector)  # [batch_size, query_size, c, h, 1, 1]
-    # v = tf.squeeze(v, -1)  # [batch_size, query_size, c, h, 1]
-    # v = tf.squeeze(v, -1)  # [batch_size, query_size, c, h]
-
-    # v_T = tf.transpose(v, [0, 1, 2, 4, 3])  # [batch_size, query_size, c, 1, h]
+    v = tf.nn.sigmoid(g)
     relation_score = tf.layers.dense(v, 1, activation=tf.nn.sigmoid)  # [batch_size, query_size, c, 1]
-    # w_r = tf.get_variable(
-    #     name="W_r",
-    #     shape=[1, 1, 1, 1, h],
-    #     initializer=create_initializer(initializer_range)
-    # )
-    # w_r = tf.tile(w_r, [batch_size, query_size, c, 1, 1])  # [batch_size, query_size, c, 1, h]
-    #
-    # relation_matrix_expended = tf.expand_dims(relation_matrix, 0)  # [1, c, seq_len, seq_len]
-    # relation_matrix_expended = tf.tile(relation_matrix_expended,
-    #                                    [batch_size, 1, 1, 1])  # [batch_size, c, seq_len, seq_len]
-    # class_relation = tf.matmul(tf.expand_dims(class_vector, -2),
-    #                            relation_matrix_expended)  # [batch_size, c, 1, seq_len]
-    # class_relation = tf.squeeze(class_relation, [-2])  # [batch_size, c, 1, seq_len]
-    # class_relation = tf.expand_dims(class_relation, 1)  # [batch_size, 1, c, seq_len]
-    # class_relation = tf.tile(class_relation, [1, query_size, 1, 1])  # [batch_size, query_size, c, seq_len]
-    # query = tf.expand_dims(query_input, -1)  # [batch_size, query_size, seq_len, 1]
-    # relation_score = tf.matmul(class_relation, query)  # [batch_size, query_size, c, 1]
-    # relation_score = tf.squeeze(relation_score, -1)  # [batch_size, query_size, c]
-    # relation_score = tf.nn.relu(relation_score)
-    # w_r = tf.get_variable(
-    #     name="W_r",
-    #     shape=[c, c],
-    #     initializer=create_initializer(initializer_range)
-    # )
-    # w_r_expended = tf.expand_dims(w_r, 0)
-    # w_r_expended = tf.expand_dims(w_r_expended, 0)  # [1, 1, c, c]
-    # w_r_expended = tf.tile(w_r_expended,
-    #                        [batch_size, query_size, 1, 1])  # [batch_size, query_size,  c, c]
-    # b_r = tf.get_variable(
-    #     name="b_r",
-    #     shape=[c],
-    #     initializer=create_initializer(initializer_range)
-    # )
-    # b_r_expended = tf.expand_dims(b_r, 0)
-    # b_r_expended = tf.expand_dims(b_r_expended, 0)  # [1, 1, c]
-    # b_r_expended = tf.tile(b_r_expended, [batch_size, query_size, 1])  # [batch_size, query_size, c]
-    # final_score = tf.nn.sigmoid(
-    #     tf.squeeze(tf.matmul(w_r_expended, tf.expand_dims(relation_score, -1)), [-1]) + b_r_expended)
-    final_score = tf.squeeze(relation_score)
+    final_score = tf.squeeze(relation_score,[-1]) # [batch_size, query_size, c]
     return final_score
 
 
@@ -950,9 +902,12 @@ def classifier(vocab_file,
             iterations_per_loop=iterations_per_loop,
             num_shards=num_tpu_cores,
             per_host_input_for_training=is_per_host))
-    if use_cpu:
-        run_config = run_config.replace(session_config=tf.ConfigProto(log_device_placement=True,
-                                                                      device_count={'GPU': 1}))
+    # if use_cpu:
+    #     run_config = run_config.replace(session_config=tf.ConfigProto(log_device_placement=True,
+    #                                                                   device_count={'GPU': 1}))
+    run_config = run_config.replace(
+        session_config=tf.ConfigProto( gpu_options=tf.GPUOptions(allow_growth=True)))
+
     example_nums = None
     num_train_steps = None
     num_warmup_steps = None
@@ -1045,7 +1000,7 @@ def classifier(vocab_file,
         run_num = int(np.ceil(predict_class_num / model_config.c))  # 一个样本需要跑多少次才能得到所有类的分数
         sample_num = int(len(result) / run_num * model_config.query_size)
         embedding_not_equal = False
-        tf.logging.info(f'relation_score shape: {result[0]["relation_score"].shape}')
+        tf.logging.info('relation_score shape: {shape}'.format(shape=result[0]["relation_score"].shape))
         for sample_id in range(sample_num):
             run_id_start = int(sample_id / model_config.query_size) * run_num
             sample_index_in_run = sample_id % model_config.query_size
@@ -1087,22 +1042,23 @@ if __name__ == "__main__":
     model_path = os.path.join(project_path, "models")
     model_config_fp = os.path.join(model_path, "test", "model_config.json")
     with open(model_config_fp, 'w') as model_config_fd:
-        json.dump(ModelConfig(c=2, k=5, query_size=10).to_dict(), model_config_fd)
+        json.dump(ModelConfig(c=2, k=5, query_size=32).to_dict(), model_config_fd)
     classifier(vocab_file=os.path.join(model_path, pre_train_model, "vocab.txt"),
                data_dir=os.path.join(project_path, "data", "output"),
                config_file=model_config_fp,
                bert_config_file=os.path.join(model_path, pre_train_model, "bert_config.json"),
                init_checkpoint=os.path.join(model_path, pre_train_model, "bert_model.ckpt"),
                # init_checkpoint=os.path.join(model_path, "test", "model.ckpt-250"),
-
-               train_batch_size=4,
+            max_seq_length=64,
+               train_batch_size=2,
                eval_batch_size=1,
-               predict_batch_size=2,
-               num_train_epochs=10.0,
+               predict_batch_size=1,
+               num_train_epochs=4.0,
                output_dir=os.path.join(model_path, "test"),
-               # do_train=True,
-               do_predict=True,
+               do_train=True,
+               # do_predict=True,
                iterations_per_loop=100,
                learning_rate=5e-4,
+               save_checkpoints_steps=10000,
                use_cpu=False
                )

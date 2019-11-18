@@ -275,23 +275,23 @@ class ShoppingDataProcessor(DataProcessor):
         return self._create_examples(df, "test")
 
     def _create_examples(self, df, set_type):
-        text_fd=open('/home/bert_few_shot/data/test/{set_type}.txt'.format(set_type=set_type),'w')
-        texts=[]
+        df=df.sample(frac=1.)
+        out_df=pd.DataFrame()
+        out_df["text"]=df["review"].astype(str)
+        out_df["label"]=df["class"].astype(str)
+        out_df.to_csv('/home/bert_few_shot/data/test/{set_type}.txt'.format(set_type=set_type),encoding="utf-8",index=False)
         examples = []
         for i, row in df.iterrows():
-            if np.random.rand() < 0.8:
-                continue
+            # if np.random.rand() < 0.8:
+            #     continue
             guid = "%s-%s" % (set_type, i)
             text_a = tokenization.convert_to_unicode(str(row["review"]))
             if set_type == "test":
                 label = "0"
             else:
                 label = tokenization.convert_to_unicode(str(row["class"]))
-            texts.append(text_a)
             examples.append(InputExample(guid=guid, text_a=text_a, label=label))
-        text_fd.write('\n'.join(texts))
-        text_fd.flush()
-        text_fd.close()
+
         return examples
 
 
@@ -796,8 +796,9 @@ def input_fn_builder(features, seq_length, is_training, drop_remainder):
     })
 
     if is_training:
-      d = d.repeat()
       d = d.shuffle(buffer_size=100)
+      d = d.repeat()
+
 
     d = d.batch(batch_size=batch_size, drop_remainder=drop_remainder)
     return d
@@ -878,8 +879,7 @@ def main(_):
           iterations_per_loop=FLAGS.iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
           per_host_input_for_training=is_per_host))
-  # run_config = run_config.replace(session_config=tf.ConfigProto(log_device_placement=False,
-  #                                                               device_count={'GPU': 0}))
+  run_config = run_config.replace(session_config=tf.ConfigProto(log_device_placement=False,gpu_options=tf.GPUOptions(allow_growth=True)))
 
   train_examples = None
   num_train_steps = None
@@ -1008,11 +1008,13 @@ def main(_):
       tf.logging.info("***** Predict results *****")
       for (i, prediction) in enumerate(result):
         probabilities = prediction["probabilities"]
+        label=np.argmax(probabilities)
         if i >= num_actual_predict_examples:
           break
         output_line = "\t".join(
             str(class_probability)
             for class_probability in probabilities) + "\n"
+        output_line=str(label)+"\n"
         writer.write(output_line)
         num_written_lines += 1
     assert num_written_lines == num_actual_predict_examples

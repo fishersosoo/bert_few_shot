@@ -7,8 +7,8 @@ python bert/run_classifier.py --task_name=shopping \
 --max_seq_length=128 \
 --output_dir=/home/bert_few_shot/data/test &>/home/bert_few_shot/log
 
-
-CUDA_VISIBLE_DEVICES=0 python bert/run_classifier.py \
+CUDA_VISIBLE_DEVICES=0
+python bert/run_classifier.py \
 --task_name=shopping \
   --do_train=true \
   --do_eval=true \
@@ -16,9 +16,10 @@ CUDA_VISIBLE_DEVICES=0 python bert/run_classifier.py \
   --vocab_file=/home/bert_few_shot/models/chinese_L-12_H-768_A-12/vocab.txt \
   --bert_config_file=/home/bert_few_shot/models/chinese_L-12_H-768_A-12/bert_config.json \
   --init_checkpoint=/home/bert_few_shot/models/chinese_L-12_H-768_A-12/bert_model.ckpt \
-  --max_seq_length=32 \
-  --train_batch_size=16 \
+  --max_seq_length=64 \
+  --train_batch_size=64 \
   --learning_rate=2e-5 \
-  --num_train_epochs=20.0 \
+  --num_train_epochs=10.0 \
+  --save_checkpoints_steps=10000 \
   --use_tpu=false \
   --output_dir=/home/bert_few_shot/models/test &>/home/bert_few_shot/log
