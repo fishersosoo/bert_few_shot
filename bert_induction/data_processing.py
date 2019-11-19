@@ -228,7 +228,7 @@ def check_dir(fp):
 def generate_data(input_csv, output_dir):
     check_dir(output_dir)
     training_dir = os.path.join(output_dir, "train")
-    data = OnlineShoppingData(input_csv, c=2, k=5, query_size_per_class=16)
+    data = OnlineShoppingData(input_csv, c=1, k=5, query_size_per_class=2)
     with open(os.path.join(output_dir, "data_param.json"), "w") as fp:
         json.dump(data.params(), fp)
     data.choose_train_test_class(15)
