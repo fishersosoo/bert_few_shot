@@ -77,17 +77,16 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
         tokenizer:
         max_seq_length:
         fp_in: 输入文件所在目录.
-            目录里面包含三个numpy.dump生成的文件 'support_input_text', 'query_input_text', 'query_label'
+            目录里面包含三个numpy.dump生成的文件 'support_input_text.npy', 'query_input_text.npy', 'query_label.npy'
 
-            support_input_text, string array [training_iter, c, k].
-            每个 training_iter 会 reshape 成 [c * k * max_seq_length] int64 list.
+            support_input_text, string array [training_iter_num, k].
+            每个 training_iter 会 reshape 成 [k * max_seq_length] int64 list.
 
-            query_input_text, string array [training_iter, query_size].
-            每个 training_iter 会 reshape 成 [query_size * max_seq_length] int64 list.
+            query_input_text, string array [training_iter_num].
+            每个 training_iter 会 reshape 成 [max_seq_length] int64 list.
 
-            query_label，int array [training_iter, query_size].
-            需要转化成one-hot编码 int array [training_iter, query_size, c].
-            每个 training_iter 会 reshape 成 [query_size * c] int64 list.
+            query_label，int array [training_iter_num].
+            每个 training_iter 会 reshape 成 [1] int64 list.
 
         fp_out: TFRecord文件路径
 
@@ -95,8 +94,6 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
         training_iter
     """
     with tf.python_io.TFRecordWriter(fp_out) as writer:
-        # if tokenizer is None:
-        #     tokenizer = tokenization.FullTokenizer(vocab_file=vocab_file, do_lower_case=True)
         support_input_text = np.load(os.path.join(fp_in, "support_text.npy"), allow_pickle=True)
         query_input_text = np.load(os.path.join(fp_in, "query_text.npy"), allow_pickle=True)
         if do_predict is False:
@@ -104,13 +101,11 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
         else:
             query_label = None
 
-        training_iter, c, k = support_input_text.shape
-        _training_iter, query_size = query_input_text.shape
+        training_iter_num, k = support_input_text.shape
         tf.logging.info("support input:{shape} ".format(shape=support_input_text.shape))
         tf.logging.info("query input:{shape} ".format(shape=query_input_text.shape))
-        input_text = InputText(c, k, query_size)
         tf.logging.info(str(support_input_text[2].shape))
-        for iter_index in range(training_iter):
+        for iter_index in range(training_iter_num):
             features = collections.OrderedDict()
             iter_support_input_ids = []
             iter_support_input_mask = []
@@ -119,7 +114,7 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
             for text_id, one_text in enumerate(support_input_text[iter_index].reshape(-1)):
                 one_text = tokenization.convert_to_unicode(one_text)
                 ids, mask = convert_to_ids(one_text, max_seq_length, tokenizer)
-                if iter_index == 0 or iter_index == training_iter - 1:
+                if iter_index == 0 or iter_index == training_iter_num - 1:
                     tf.logging.info("support text {text_id}:{text}\n ids:{ids}\n mask:{mask}".format(
                         text_id=text_id,
                         text=one_text,
@@ -128,12 +123,11 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
                     ))
                 iter_support_input_ids.append(ids)
                 iter_support_input_mask.append(mask)
-                input_text.write_support_text(iter_index, int(text_id / k), one_text)
             for text_id, one_query_text in enumerate(query_input_text[iter_index]):
-                input_text.write_query_text(iter_index, one_query_text)
+                # input_text.write_query_text(iter_index, one_query_text)
                 one_query_text = tokenization.convert_to_unicode(one_query_text)
                 query_ids, mask = convert_to_ids(one_query_text, max_seq_length, tokenizer)
-                if iter_index == 0 or iter_index == training_iter - 1:
+                if iter_index == 0 or iter_index == training_iter_num - 1:
                     tf.logging.info("query text:{text}\n ids:{ids}\n mask:{mask}".format(
                         text=one_query_text,
                         ids=query_ids,
@@ -152,16 +146,15 @@ def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=Fals
                 int64_list=tf.train.Int64List(value=np.array(iter_query_input_ids).reshape(-1)))
             features["query_input_mask"] = tf.train.Feature(
                 int64_list=tf.train.Int64List(value=np.array(iter_query_input_mask).reshape(-1)))
-            if query_label is not None:
+            if not do_predict:
                 features["query_label"] = tf.train.Feature(
-                    int64_list=tf.train.Int64List(value=query_label[iter_index].reshape(-1)))
+                    int64_list=tf.train.Int64List(value=[query_label[iter_index]]))
             else:
                 features["query_label"] = tf.train.Feature(
-                    int64_list=tf.train.Int64List(value=[0] * (query_size * c)))
+                    int64_list=tf.train.Int64List(value=[0]))
             tf_example = tf.train.Example(features=tf.train.Features(feature=features))
             writer.write(tf_example.SerializeToString())
-        input_text.dump(os.path.join(fp_in, "text.json"))
-        return training_iter
+        return training_iter_num
 
 
 def file_based_input_fn_builder(input_file, config, max_seq_length, is_training, drop_remainder):
@@ -176,24 +169,15 @@ def file_based_input_fn_builder(input_file, config, max_seq_length, is_training,
     Returns:
 
     """
-    c = config.c
     k = config.k
-    query_size = config.query_size
 
     def _decode_record(record):
-        name_to_features = {"support_input_ids": tf.FixedLenFeature([c * k * max_seq_length], tf.int64),
-                            "support_input_mask": tf.FixedLenFeature([c * k * max_seq_length], tf.int64),
-                            "query_input_ids": tf.FixedLenFeature([query_size * max_seq_length], tf.int64),
-                            "query_input_mask": tf.FixedLenFeature([query_size * max_seq_length], tf.int64),
-                            "query_label": tf.FixedLenFeature([query_size * c], tf.int64)}
+        name_to_features = {"support_input_ids": tf.FixedLenFeature([k * max_seq_length], tf.int64),
+                            "support_input_mask": tf.FixedLenFeature([k * max_seq_length], tf.int64),
+                            "query_input_ids": tf.FixedLenFeature([max_seq_length], tf.int64),
+                            "query_input_mask": tf.FixedLenFeature([max_seq_length], tf.int64),
+                            "query_label": tf.FixedLenFeature([1], tf.int64)}
         example = tf.parse_single_example(record, name_to_features)
-        # tf.Example only supports tf.int64, but the TPU only supports tf.int32.
-        # So cast all int64 to int32.
-        # for name in list(example.keys()):
-        #     t = example[name]
-        #     if t.dtype == tf.int64:
-        #         t = tf.to_int32(t)
-        #     example[name] = t
         return example
 
     def input_fn(params):
@@ -496,16 +480,17 @@ def squash(vector, epsilon=1e-9):
     """
 
     Args:
-        vector: [batch_size, c, 1, seq_len]
+
+        vector: [batch_size, 1, class_vector_len]
         epsilon:
 
     Returns:
-
+        [batch_size, 1, class_vector_len]
     """
-    vec_squared_norm = tf.reduce_sum(tf.square(vector), -1, keepdims=True)  # [batch_size, c, 1, 1]
+    vec_squared_norm = tf.reduce_sum(tf.square(vector), -1, keepdims=True)  # [batch_size, 1, 1]
     scalar_factor = vec_squared_norm / (1 + vec_squared_norm) / tf.sqrt(
-        vec_squared_norm + epsilon)  # [batch_size, c, 1, 1]
-    vec_squashed = scalar_factor * vector  # element-wise [batch_size, c, 1, seq_len]
+        vec_squared_norm + epsilon)  # [batch_size, 1, 1]
+    vec_squashed = scalar_factor * vector  # element-wise [batch_size, 1, seq_len]
     return vec_squashed
 
 
@@ -530,68 +515,62 @@ def induction(sample_prediction_vector,
 
     Args:
         class_vector_len: scalar 表示类向量的维度
-        sample_prediction_vector: float tensor [batch_size, c, k, seq_length]
+        sample_prediction_vector: float tensor [batch_size, k, embedding_size]
         iter_routing:
         initializer_range:
 
     Returns:
-        class vector. float tensor [batch_size, c,  class_vector_len]
+        class vector. float tensor [batch_size, class_vector_len]
     """
     # tf.logging.info(sample_prediction_vector)
-    batch_size, c, k, seq_length = get_shape_list(sample_prediction_vector, expected_rank=4)
-    b = tf.constant(np.zeros([batch_size, c, 1, k], dtype=np.float32), dtype=tf.float32)
-    e = sample_prediction_vector  # [batch_size, c, k, seq_len]
-    e_hat = tf.layers.dense(e, seq_length,activation=gelu,use_bias=False)  # [batch_size, c, k, seq_len]
-
+    batch_size, k, embedding_size = get_shape_list(sample_prediction_vector, expected_rank=3)
+    b = tf.constant(np.zeros([batch_size, 1, k], dtype=np.float32), dtype=tf.float32)
+    e = sample_prediction_vector  # [batch_size, k, embedding_size]
+    e_hat = tf.layers.dense(e, class_vector_len, activation=gelu, use_bias=False,
+                            name="dimension_mapping")  # [batch_size, k, class_vector_len]
     e_hat_stopped = tf.stop_gradient(e_hat, name='stop_gradient')
-    # e_hat_stopped=e_hat
     for r_iter in range(iter_routing):
         with tf.variable_scope("iter_" + str(iter_routing)):
             d = tf.nn.softmax(b, axis=-1)
-
             if r_iter < iter_routing - 1:  # 前面的迭代，不需要梯度下降
-                c_hat_stopped = tf.matmul(d, e_hat_stopped)  # [batch_size, c, 1, seq_len]
-                c = squash(c_hat_stopped)  # [batch_size, c, 1, seq_len]
+                c_hat_stopped = tf.matmul(d, e_hat_stopped)  # [batch_size, 1, class_vector_len]
+                c = squash(c_hat_stopped)  # [batch_size, 1, class_vector_len]
                 # 更新b
-                # b=b + e_hat * c
-                c_expend = tf.tile(c, [1, 1, k, 1])  # [batch_size, c, k, seq_len]
-                e_product_c = tf.reduce_sum(tf.multiply(e_hat_stopped, c_expend), axis=-1)  # [batch_size, c, k]
-                e_product_c = tf.expand_dims(e_product_c, -2)  # [batch_size, c, 1, k]
-                b += e_product_c  # [batch_size, c, 1, k]
-            if r_iter == iter_routing - 1:  # 最后的迭代，需要梯度下降
-                c_hat = tf.matmul(d, e_hat)  # [batch_size, c, 1, seq_len]
-                c = squash(c_hat)  # [batch_size, c, 1, seq_len]
-                c = tf.squeeze(c, [-2])  # [batch_size, c,  seq_len]
+                # b = b + e_hat * c
+                c_expend = tf.tile(c, [1, k, 1])  # [batch_size, k, class_vector_len]
+                e_product_c = tf.reduce_sum(tf.multiply(e_hat_stopped, c_expend), axis=-1)  # [batch_size, k]
+                e_product_c = tf.expand_dims(e_product_c, -2)  # [batch_size, 1, k]
+                b += e_product_c  # [batch_size, 1, k]
+            else:  # 最后的迭代，需要梯度下降
+                c_hat = tf.matmul(d, e_hat)  # [batch_size, 1, class_vector_len]
+                c = squash(c_hat)  # [batch_size, 1, class_vector_len]
+                c = tf.squeeze(c, [-2])  # [batch_size, class_vector_len]
                 # 不需要更新b
-                # c_hat = tf.squeeze(c_hat, [-2])  # [batch_size, c, seq_len]
-                # c = squash(c_hat)  # [batch_size, c, seq_len]
     return c
 
 
 def relation_model(class_vector,
                    query_input,
+
                    h=16,
                    initializer_range=0.02
                    ):
     """
 
     Args:
-        class_vector: [batch_size, c, seq_len]
-        query_input: [batch_size, query_size, seq_len]
+        class_vector: [batch_size, class_vector_len]
+        query_input: [batch_size, embedding_size]
         initializer_range:
 
     Returns:
-        relation score. [batch_size, query_size, c]
+        relation score.  [batch_size, 2]
     """
 
+    batch_size, class_vector_len = get_shape_list(class_vector, expected_rank=2)
+    batch_size, embedding_size = get_shape_list(query_input, expected_rank=2)
+    query_input_mapped = tf.layers.dense(query_input, class_vector_len, activation=gelu, reuse=True, use_bias=False,
+                                         name="dimension_mapping")  # [batch_size, class_vector_len]
 
-
-    batch_size, c, seq_len = get_shape_list(class_vector,expected_rank=3)
-    batch_size, query_size, seq_len_ = get_shape_list(query_input,expected_rank=3)
-    assert seq_len==seq_len_
-    class_vector_extend = tf.expand_dims(class_vector, 1)  # [batch_size, 1, c, seq_len]
-    class_vector_extend = tf.tile(class_vector_extend,
-                                  [1, query_size, 1, 1])  # [batch_size, query_size, c,  seq_len]
     # concat
     # query_input_extend= tf.expand_dims(query_input, 2)  #[batch_size, query_size,1, seq_len]
     # query_input_extend= tf.tile(query_input_extend, [1,1,c,1])  # [batch_size, query_size, c, seq_len]
@@ -602,17 +581,21 @@ def relation_model(class_vector,
 
     # NTN
     for k in range(h):
-        transformed_vector_k = tf.layers.dense(query_input, seq_len, use_bias=False,
-                                               name="M_{k}".format(k=k))  # [batch_size, query_size, seq_len]
-        transformed_vector_k = tf.expand_dims(transformed_vector_k, 2)  # [batch_size, query_size, 1, seq_len]
-        transformed_vector_k = tf.tile(transformed_vector_k, [1, 1, c, 1])  # [batch_size, query_size, c, seq_len]
-        g_k = tf.reduce_sum(tf.multiply(class_vector_extend, transformed_vector_k), axis=-1,
-                            keepdims=False)  # [batch_size, query_size, c]
+        transformed_vector_k = tf.layers.dense(query_input, class_vector_len, use_bias=False,
+                                               name="M_{k}".format(k=k))  # [batch_size, class_vector_len]
+        g_k = tf.reduce_sum(tf.multiply(class_vector, transformed_vector_k), axis=-1,
+                            keepdims=False)  # [batch_size]
         g.append(g_k)
 
-    stacked = layer_norm(tf.stack(g, axis=-1))  # [batch_size, query_size, c, h]
-    v = tf.nn.sigmoid(stacked)
-
+    # stacked = layer_norm(tf.stack(g, axis=-1))  # [batch_size, query_size, c, h]
+    stacked = tf.stack(g, axis=-1)  # [batch_size, h]
+    output_weights = tf.get_variable(
+        "output_weights", [2, h],
+        initializer=tf.truncated_normal_initializer(stddev=0.02))
+    output_bias = tf.get_variable(
+        "output_bias", [2], initializer=tf.zeros_initializer())
+    relation_score = tf.matmul(stacked, output_weights, transpose_b=True)
+    relation_score = tf.nn.bias_add(relation_score, output_bias)  # [batch_size, 2]
     # transformed_vector = tf.expand_dims(stacked,
     #                                     2)  # [batch_size, query_size, 1, h, seq_len]
     # transformed_vector = tf.tile(transformed_vector, [1, 1, c, 1, 1])  # [batch_size, query_size, c, h, seq_len]
@@ -626,9 +609,9 @@ def relation_model(class_vector,
     # g = tf.reduce_sum(tf.multiply(class_vector_extend, transformed_vector), axis=-1,
     #                   keepdims=False)  # [batch_size, query_size, c, h]
     # v = tf.nn.sigmoid(g)
-    relation_score = tf.layers.dense(v, 1, activation=tf.nn.sigmoid)  # [batch_size, query_size, c, 1]
-    final_score = tf.squeeze(relation_score, [-1])  # [batch_size, query_size, c]
-    return final_score
+    # relation_score = tf.layers.dense(stacked, 1, activation=tf.nn.sigmoid)  # [batch_size, 1]
+    # final_score = tf.squeeze(relation_score, [-1])  # [batch_size, query_size, c]
+    return relation_score
 
 
 class InductionModel():
@@ -653,41 +636,39 @@ class InductionModel():
             attention_probs_dropout_prob = 0.0
         else:
             hidden_dropout_prob = 0.1
-        c = config.c
         k = config.k
-        query_size = config.query_size
+        class_vector_len = config.class_vector_len
         support_input_shape = get_shape_list(support_input_ids, expected_rank=2)
         # batch_size = support_input_shape[0]
         tf.logging.info(support_input_ids)
 
-        max_seq_len = int(support_input_shape[1] / (c * k))
+        max_seq_len = int(support_input_shape[1] / (k))
         config = copy.deepcopy(config)
         # reshape input
-        support_input_ids = tf.reshape(support_input_ids, [batch_size * c * k, max_seq_len])
-        self.support_input_ids = tf.reshape(support_input_ids, [batch_size, c, k, max_seq_len])
-        support_input_mask = tf.reshape(support_input_mask, [batch_size * c * k, max_seq_len])
-        query_input_ids = tf.reshape(query_input_ids, [batch_size * query_size, max_seq_len])
-        query_input_mask = tf.reshape(query_input_mask, [batch_size * query_size, max_seq_len])
+        support_input_ids = tf.reshape(support_input_ids, [batch_size * k, max_seq_len])
+        self.support_input_ids = tf.reshape(support_input_ids, [batch_size, k, max_seq_len])
+        support_input_mask = tf.reshape(support_input_mask, [batch_size * k, max_seq_len])
+        query_input_ids = tf.reshape(query_input_ids, [batch_size, max_seq_len])
+        query_input_mask = tf.reshape(query_input_mask, [batch_size, max_seq_len])
         input_ids = tf.concat([support_input_ids, query_input_ids], axis=0)
         input_mask = tf.concat([support_input_mask, query_input_mask], axis=0)
         bert_model = BertModel(bert_config, is_training=is_training, input_ids=input_ids, input_mask=input_mask,
                                token_type_ids=None, use_one_hot_embeddings=False)
         output_layer = bert_model.get_pooled_output()
-        output_layer = tf.layers.dense(tf.layers.dropout(output_layer, rate=hidden_dropout_prob),
-                                       64, use_bias=False,activation=gelu,
-                                       kernel_initializer=create_initializer(initializer_range=0.2))
+        # output_layer = tf.layers.dense(tf.layers.dropout(output_layer, rate=hidden_dropout_prob),
+        #                                64, use_bias=False, activation=gelu,
+        #                                kernel_initializer=create_initializer(initializer_range=0.2))
         embedding_size = output_layer.shape[-1].value
 
-        support_input, query_input = tf.split(output_layer, [batch_size * c * k, batch_size * query_size])
+        support_input, query_input = tf.split(output_layer, [batch_size * k, batch_size])
 
-        support_input = tf.reshape(support_input, [batch_size, c, k, embedding_size])
+        support_input = tf.reshape(support_input, [batch_size, k, embedding_size])
 
-        query_input = tf.reshape(query_input, [batch_size, query_size, embedding_size])
+        query_input = tf.reshape(query_input, [batch_size, embedding_size])
         # query_input=tf.stop_gradient(query_input)
-        self.output_layer = query_input
+        self.query_embedding = query_input
         self.support_embedding = support_input
 
-        query_label = tf.reshape(query_label, [batch_size, query_size, c])
         if not is_training:
             # dropout_prob设为0
             pass
@@ -695,12 +676,10 @@ class InductionModel():
         # _, query_size, _ = get_shape_list(support_input, expected_rank=3)
         with tf.variable_scope(scope, default_name="induction"):
             with tf.variable_scope("routing"):
-                self.class_vector = induction(support_input, 768)
+                self.class_vector = induction(support_input, class_vector_len)  # [batch_size, class_vector_len]
         with tf.variable_scope(scope, default_name="relation"):
             self.relation_score = relation_model(class_vector=self.class_vector,
                                                  query_input=query_input)  # [batch_size, query_size, c]
-        with tf.variable_scope(scope, default_name="loss"):
-            self.loss = tf.losses.mean_squared_error(query_label, self.relation_score)
 
 
 def create_model(bert_config, config, is_training, support_input_ids, support_input_mask, query_input_ids, batch_size,
@@ -728,10 +707,11 @@ loss, model.relation_score, model.output_layer,model.class_vector,model.support_
                            query_input_ids=query_input_ids,
                            query_input_mask=query_input_mask,
                            query_label=query_label, batch_size=batch_size)
-    with tf.variable_scope("loss"):
-        query_label = tf.reshape(query_label, [get_shape_list(query_label)[0], config.query_size, config.c])
-        loss = tf.losses.mean_squared_error(query_label, model.relation_score)
-    return loss, model.relation_score, model.output_layer, model.class_vector, model.support_embedding, model.support_input_ids
+    with tf.variable_scope("InductionModel", default_name="loss"):
+        one_hot_labels = tf.one_hot(query_label, depth=2, dtype=tf.float32)
+        per_example_loss = -tf.reduce_sum(one_hot_labels * model.relation_score, axis=-1)
+        loss = tf.reduce_mean(per_example_loss)
+    return loss, model.relation_score, model.query_embedding, model.class_vector, model.support_embedding, model.support_input_ids
 
 
 def model_fn_builder(bert_config, config, init_checkpoint, learning_rate, batch_size,
@@ -843,7 +823,7 @@ class ModelConfig():
     # seq_len: 每个样本特征数量
     # query_size: query set 样本数量
 
-    def __init__(self, c=2, k=5, seq_len=768, query_size=10):
+    def __init__(self, k=5, class_vector_len=128):
         """
         模型超参数（需要config文件中配置，和导出的模型一起打包）
         Args:
@@ -852,10 +832,8 @@ class ModelConfig():
             seq_len: 每个样本特征数量
             query_size: query set 样本数量
         """
-        self.c = c
         self.k = k
-        self.seq_len = seq_len
-        self.query_size = query_size
+        self.class_vector_len = class_vector_len
 
     @classmethod
     def from_dict(cls, json_obj):
