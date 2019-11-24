@@ -157,7 +157,7 @@ class OnlineShoppingData():
                 selected_sample = class_sample
             else:
                 selected_sample = class_sample.sample(sample_per_class)
-            selected_sample.loc["class_index"] = class_index
+            selected_sample["class_index"] = class_index
             if query_set_df is None:
                 query_set_df = selected_sample
             else:
@@ -204,7 +204,7 @@ def generate_data(input_csv, output_dir):
     data = OnlineShoppingData(input_csv, k=5, info_fp=info_path)
     data.choose_train_test_class(15)
     data.save_info(os.path.join(output_dir, "data_param.json"))
-    support_set_text, query_set_text, query_set_label = data.generate_training_data(training_iter_num=4000)
+    support_set_text, query_set_text, query_set_label = data.generate_training_data(training_iter_num=10000)
     check_dir(training_dir)
     save_list(support_set_text, os.path.join(training_dir, "support_text"))
     save_list(query_set_text, os.path.join(training_dir, "query_text"))
