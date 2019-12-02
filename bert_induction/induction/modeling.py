@@ -542,8 +542,10 @@ def relation_model(class_vector,
     g = []
     # NTN
     for k in range(h):
-        transformed_vector_k = tf.layers.dense(query_input, attention_size, use_bias=False,
-                                               name="M_{k}".format(k=k))  # [batch_size, attention_size]
+        dense=tf.layers.Dense( attention_size, use_bias=False,
+                                               name="M_{k}".format(k=k))
+        dense.kernel
+        transformed_vector_k=dense.apply(query_input)
         g_k = tf.reduce_sum(tf.multiply(class_vector, transformed_vector_k), axis=-1,
                             keepdims=False)  # [batch_size]
         g.append(tf.nn.relu(g_k))
@@ -1038,7 +1040,7 @@ def predict(output_dir):
     model_config_fp = os.path.join(model_path, "test", "model_config.json")
     classifier(embedding_file=os.path.join(model_path, "vector", "merge_sgns_bigram_char300.txt"),
                dict_path=os.path.join(model_path, "vector", "user_dict.txt"),
-               data_dir=os.path.join(project_path, "data", "output"),
+               data_dir=os.path.join(project_path, "data", "output","self_support"),predict_class_num=1,
                config_file=model_config_fp,
                init_checkpoint=os.path.join(model_path, "test", "model.ckpt-10000"),
                max_seq_length=64,
@@ -1054,4 +1056,4 @@ if __name__ == "__main__":
 
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     # fine_tune()
-    predict("/home/bert_few_shot/data/result/")
+    predict("/home/bert_few_shot/data/output/self_support/result")
