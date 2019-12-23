@@ -10,6 +10,8 @@ import pandas as pd
 import six
 import tensorflow as tf
 from tensorflow.contrib import rnn
+from tensorflow.python.keras import initializers
+from tensorflow.python.ops import standard_ops, gen_math_ops
 from tensorflow.python.ops.rnn import bidirectional_dynamic_rnn
 
 from bert import tokenization
@@ -523,8 +525,8 @@ def induction(sample_prediction_vector,
     return c
 
 
-def relation_model(class_vector,
-                   query_input,
+def relation_model(class_vector, support_inputs, learning_rate,
+                   query_input, iter_num,
                    h,
                    ):
     """
@@ -541,17 +543,106 @@ def relation_model(class_vector,
     batch_size, attention_size = get_shape_list(class_vector, expected_rank=2)
     g = []
     # NTN
+    M = tf.get_variable(
+        name="M",
+        shape=[h, attention_size, attention_size],
+        initializer=initializers.get("glorot_uniform"))
+    M_bias, support_losses = adjust_relation_weight(class_vector=class_vector,
+                                                    support_input=support_inputs,
+                                                    M=M,
+                                                    learning_rate=learning_rate,
+                                                    iter_num=iter_num,
+                                                    class_num=1
+                                                    )
+    tf.summary.scalar("support_losses", support_losses)
+    M = M + tf.stop_gradient(M_bias)
     for k in range(h):
-        dense=tf.layers.Dense( attention_size, use_bias=False,
-                                               name="M_{k}".format(k=k))
-        dense.kernel
-        transformed_vector_k=dense.apply(query_input)
+        transformed_vector_k = apply_kernel(query_input, M[k])
         g_k = tf.reduce_sum(tf.multiply(class_vector, transformed_vector_k), axis=-1,
                             keepdims=False)  # [batch_size]
         g.append(tf.nn.relu(g_k))
     relation_vector = tf.stack(g, axis=-1)  # [batch_size, h]
-    relation_score = tf.layers.dense(relation_vector, 1, activation=tf.nn.sigmoid)  # [batch_size, 1]
+    relation_score = cal_relation_score(relation_vector, 1)  # [batch_size, 1]
     return relation_score
+
+
+def cal_relation_score(relation_vector, class_num):
+    """
+
+    Args:
+        relation_vector:
+        class_num:
+
+    Returns:
+
+    """
+    return tf.layers.dense(relation_vector, class_num, activation=tf.nn.sigmoid, name="output", reuse=tf.AUTO_REUSE)
+
+
+def apply_kernel(input, kernel):
+    """
+
+    Args:
+        input:
+        kernel: [input.shape[-1], units]
+
+    Returns:
+        Same shape as input but the last dimension is units
+    """
+    rank = input.shape.ndims
+    if rank > 2:
+        outputs = standard_ops.tensordot(input, kernel, [[rank - 1], [0]])
+    else:
+        outputs = gen_math_ops.mat_mul(input, kernel)
+    return outputs
+
+
+def adjust_relation_weight(class_vector, support_input, M, learning_rate, iter_num, class_num):
+    """
+
+    Args:
+        class_vector: [batch_size, attention_size]
+        support_input: [batch_size, k, hidden_size, ]
+        M: [h, attention_size, attention_size]
+        learning_rate: float32
+        iter_num: int
+
+    Returns:
+        M_bias: [h, attention_size, attention_size]
+
+    """
+    h, attention_size, attention_size = get_shape_list(M, expected_rank=3)
+    batch_size, k, hidden_size = get_shape_list(support_input, expected_rank=3)
+    class_vector_extend = tf.expand_dims(class_vector, 1)  # [batch_size, 1, attention_size]
+    class_vector_extend = tf.tile(class_vector_extend, [1, k, 1])  # # [batch_size, k, attention_size]
+    M_bias = tf.Variable(tf.zeros([h, attention_size, attention_size]), trainable=False, name="M_bias")
+
+    # calculate support loss at least one time
+    kernels = M + M_bias
+    g = []
+    for i in range(h):
+        g_k = apply_kernel(support_input, kernels[i])  # [batch_size, k, attention_size]
+        g.append(tf.nn.relu(tf.reduce_sum(tf.multiply(class_vector_extend, g_k), axis=-1,
+                                          keepdims=False)))  # [batch_size, k]
+    relation_vector = tf.stack(g, axis=-1)  # [batch_size, k, h]
+    relation_vector = tf.stop_gradient(relation_vector)
+    score = cal_relation_score(relation_vector, class_num)  # [batch_size, k, 1]
+    support_loss = tf.losses.mean_squared_error(np.ones_like([batch_size, k, 1]), score)
+
+    for iter in range(iter_num):
+        kernels = M + M_bias
+        g = []
+        for i in range(h):
+            g_k = apply_kernel(support_input, kernels[i])  # [batch_size, k, attention_size]
+            g.append(tf.nn.relu(tf.reduce_sum(tf.multiply(class_vector_extend, g_k), axis=-1,
+                                              keepdims=False)))  # [batch_size, k]
+        relation_vector = tf.stack(g, axis=-1)  # [batch_size, k, h]
+        relation_vector = tf.stop_gradient(relation_vector)
+        score = cal_relation_score(relation_vector, class_num)  # [batch_size, k, 1]
+        support_loss = tf.losses.mean_squared_error(np.ones_like([batch_size, k, 1]), score)
+        grad = tf.gradients(support_loss, M_bias)
+        M_bias = tf.assign_sub(M_bias - learning_rate * grad)
+    return M_bias, support_loss
 
 
 def self_attention_bi_lstm(input, hidden_size, attention_size, dropout_prob, is_training):
@@ -573,7 +664,7 @@ def self_attention_bi_lstm(input, hidden_size, attention_size, dropout_prob, is_
 
     cell_fw = rnn.BasicLSTMCell(hidden_size)
     cell_bw = rnn.BasicLSTMCell(hidden_size)
-    rnn_outputs, _ = bidirectional_dynamic_rnn(cell_fw, cell_bw, input,dtype=tf.float32)
+    rnn_outputs, _ = bidirectional_dynamic_rnn(cell_fw, cell_bw, input, dtype=tf.float32)
     out = tf.concat(rnn_outputs, -1)  # [batch_size, max_seq_len, hidden_size * 2]
     return self_attention(out, attention_size, dropout_prob)
 
@@ -644,9 +735,8 @@ def create_model(config, is_training, support_embeddings, query_embeddings, batc
                            query_embeddings=query_embeddings,
                            query_label=query_label, batch_size=batch_size)
     with tf.variable_scope("loss"):
-        # label = tf.expand_dims(query_label, -1)  # [batch_size, 1]
-        tf.logging.info(query_label)
-        tf.logging.info(model.relation_score)
+        tf.logging.info(query_label)  # [batch_size, 1]
+        tf.logging.info(model.relation_score)  # [batch_size, 1]
         loss = tf.losses.mean_squared_error(query_label, model.relation_score)
     return loss, model.query_encode, model.class_vector, model.support_encode, model.relation_score
 
@@ -1040,7 +1130,7 @@ def predict(output_dir):
     model_config_fp = os.path.join(model_path, "test", "model_config.json")
     classifier(embedding_file=os.path.join(model_path, "vector", "merge_sgns_bigram_char300.txt"),
                dict_path=os.path.join(model_path, "vector", "user_dict.txt"),
-               data_dir=os.path.join(project_path, "data", "output","self_support"),predict_class_num=1,
+               data_dir=os.path.join(project_path, "data", "output", "self_support"), predict_class_num=1,
                config_file=model_config_fp,
                init_checkpoint=os.path.join(model_path, "test", "model.ckpt-10000"),
                max_seq_length=64,
