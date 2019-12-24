@@ -1,7 +1,7 @@
 # encoding=utf-8
 import tensorflow as tf
 
-from induction.modeling import classifier
+from model.induction import classifier
 
 flags = tf.flags
 

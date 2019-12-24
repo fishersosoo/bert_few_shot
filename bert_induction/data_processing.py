@@ -3,8 +3,8 @@ import os
 import logging
 import numpy as np
 
-from data_processing.read_data import OnlineShoppingData,log
-
+from data_processing.read_data import log
+from data_processing import OnlineShoppingData
 
 
 def conver_to_onehot(y, class_num):

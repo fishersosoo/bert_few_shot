@@ -24,9 +24,7 @@ import os
 
 import pandas as pd
 import numpy as np
-from bert_induction.bert import modeling
-from bert_induction.bert import optimization
-from bert_induction.bert import tokenization
+from model.bert import optimization, modeling, tokenization
 import tensorflow as tf
 
 flags = tf.flags

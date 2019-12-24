@@ -1,112 +1,20 @@
-import collections
-import json
-import logging
-import os
+from collections import __init__
 
-import tensorflow as tf
 import numpy as np
 import pandas as pd
-from abc import abstractmethod
+import tensorflow as tf
 
-from bert import tokenization
-
-log = logging.getLogger("data_process")
-# sh = logging.StreamHandler()
-# sh.setFormatter(format_str)
-log.addHandler(logging.StreamHandler())
-log.setLevel(logging.INFO)
-
-
-class Dataset(object):
-    @abstractmethod
-    def read_raw_data_file(self, raw_fp, *args, **kwargs):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def train_test_split(self, *args, **kwargs):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def get_training_examples(self, *args, **kwargs):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def get_test_examples(self, *args, **kwargs):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def write_example(self, *args, **kwargs):
-        """
-        将输入数据转化成TFRecord文件
-        每一个 training 迭代写成一个example
-        Args:
-            fp_in:
-            fp_out:
-            max_seq_length:
-            tokenizer:
-            do_predict:
-
-        Returns:
-
-        """
-        raise NotImplementedError()
-
-    @abstractmethod
-    def build_file_base_input_fn(self, *args, **kwargs):
-        """
-        读取TF_Record构建输入pipeline
-        Args:
-            input_file:
-            params:
-            is_training:
-            drop_remainder:
-
-        Returns:
-
-        """
-        raise NotImplementedError()
-
-    @abstractmethod
-    def convert_examples_to_features(self, examples, label_list, params,
-                                     tokenizer):
-        """
-        构建成features，配合build_input_fn使用
-        Args:
-            examples:
-            label_list:
-            params:
-            tokenizer:
-
-        Returns:
-
-        """
-        raise NotImplementedError()
-
-    @abstractmethod
-    def build_input_fn(self, *args, **kwargs):
-        raise NotImplementedError()
+from data_processing.data_set import Dataset
+from data_processing.read_data import log
+from model.bert import tokenization
 
 
 class OnlineShoppingData(Dataset):
     def convert_examples_to_features(self, examples, label_list, params, tokenizer):
-
-        features = []
-        pass
+        raise NotImplementedError()
 
     def build_input_fn(self, features, config, max_seq_length, is_training, drop_remainder):
-        # support_embedding=[]
-        # query_embedding=[]
-        # query_label=[]
-        # for feature in features:
-        #     support_embedding.append(feature["support_embedding"])
-        #     query_embedding.append(feature["query_embedding"])
-        #     query_label.append(feature["query_label"])
-        #
-        # def input_fn(params):
-        #     batch_size = params["batch_size"]
-        #     num_examples = len(features)
-        #     d
-        pass
+        raise NotImplementedError()
 
     def __init__(self):
         pass
@@ -321,82 +229,3 @@ class OnlineShoppingData(Dataset):
             return dataset
 
         return input_fn
-
-# class TNEWSData():
-#     @classmethod
-#     def _process_dataset(cls, path):
-#         with open(path, encoding="UTF-8") as source_file:
-#             dataset = {"sample_id": [], "class_id": [], "class_name": [], "text": []}
-#             for line in source_file:
-#                 sample_id, class_id, class_name, text, tag = line.split("_!_")
-#                 dataset["sample_id"].append(int(sample_id))
-#                 dataset["class_id"].append(int(class_id))
-#                 dataset["class_name"].append(class_name)
-#                 dataset["text"].append(text)
-#
-#
-# class NSData():
-#     @classmethod
-#     def _process_dataset(cls, path):
-#
-#         with open(path, encoding="utf-8") as f:
-#             guide_df = {"guide_id": [], "label": [], "title": []}
-#             guides = json.load(f)
-#             for guide in guides:
-#                 guide_df["guide_id"].append(guide["guide_id"])
-#                 guide_df["title"].append(guide["title"])
-#                 guide_df["label"].append(guide["label"])
-#             return pd.DataFrame(guide_df)
-#
-#     def __init__(self, path, k=5):
-#         self.guides = self._process_dataset(path)
-#         self.labels = []
-#         for i, guide in self.guides.iterrows():
-#             self.labels.extend(guide["label"])
-#         self.labels = set(self.labels)
-#         self.k = k
-#
-#     def generate_test_data(self, output_dir):
-#         """
-#
-#         Returns:
-#             query_input, string array with shape [run_size]
-#             support_input. string array with shape [run_size, k]
-#             query_set_df. DataFrame with column ["title", 0, 1, 2, ... , class_num]
-#             class_index, class_id to class_name
-#             support_set_df. DataFrame with column ["title", "labels"]
-#         """
-#         query_input = []
-#         support_input = []
-#         predict_labels = []
-#         support_set_texts = []  # [class_num, k]
-#         df = self.guides[["title"]].copy()
-#         for label in self.labels:
-#             has_label = self.guides["label"].apply(lambda labels: label in labels)
-#             count = np.sum(has_label)
-#             log.info("{label}:{count}".format(label=label, count=count))
-#             if count > 25:
-#                 predict_labels.append(label)
-#         log.info("label to predict: {label}".format(label=predict_labels))
-#         class_num = len(predict_labels)
-#         for label_id, label in enumerate(predict_labels):
-#             has_label = self.guides["label"].apply(lambda labels: label in labels)
-#             df[label_id] = has_label.astype(int)
-#             support_set_text = self.guides[has_label].sample(self.k)["title"].to_list()
-#             support_set_texts.append(support_set_text)
-#         support_set_texts_flattent = np.array(support_set_texts).reshape(-1)
-#         query_set_df = df[np.logical_not(df["title"].isin(support_set_texts_flattent))]
-#         for query in query_set_df["title"]:
-#             for class_id in range(class_num):
-#                 query_input.append(query)
-#                 support_input.append(support_set_texts[class_id])
-#         info_dict = {"predict_labels": predict_labels, "query_set_df": query_set_df.to_dict()}
-#         with open(os.path.join(output_dir, "info.json"), 'w', encoding='utf-8') as f:
-#             json.dump(info_dict, f)
-#         np.save(os.path.join(output_dir, "support_text"), np.array(support_input))
-#         np.save(os.path.join(output_dir, "query_text"), np.array(query_input))
-
-
-# if __name__ == '__main__':
-#     # d = NSData("/home/bert_few_shot/data/source/NS/source.json", 5)
-#     # d.generate_test_data("/home/bert_few_shot/data/output/NS/predict")
