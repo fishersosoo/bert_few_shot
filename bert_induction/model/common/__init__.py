@@ -22,16 +22,16 @@ class BaseModelConfig(object):
         return config
 
     @classmethod
-    def from_json_file(cls, json_file):
+    def from_json_file(cls, json_fp):
         """
 
         Args:
-            json_file: json文件路径
+            json_fp: json文件路径
 
         Returns:
 
         """
-        with tf.gfile.GFile(json_file) as reader:
+        with tf.gfile.GFile(json_fp) as reader:
             text = reader.read()
         return cls.from_dict(json.loads(text))
 

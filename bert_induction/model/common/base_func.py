@@ -3,7 +3,9 @@ import collections
 import re
 from collections import __init__
 
+import numpy as np
 import six
+import tensorflow
 import tensorflow as tf
 from six import __init__
 
@@ -123,3 +125,25 @@ def squash(vector, epsilon=1e-9):
         vec_squared_norm + epsilon)  # ||x||^2 / (||x||^2 + 1) / ||x||  [batch_size, k, 1]
     vec_squashed = scalar_factor * vector  # element-wise  [batch_size, k, vector_len]
     return vec_squashed
+
+
+def log_variables(initialized_variable_names, tvars):
+    tf.logging.info("**** Trainable Variables ****")
+    for var in tvars:
+        init_string = ""
+        if var.name in initialized_variable_names:
+            init_string = ", *INIT_FROM_CKPT*"
+        tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
+                        init_string)
+
+
+class CheckEmbedding:
+    def __init__(self, name):
+        self.is_equal = True
+        self.name = name
+
+    def __call__(self, a, b):
+        if self.is_equal:
+            if not np.array_equal(a, b):
+                tf.logging.warning("{name} not equal!".format(name=self.name))
+                self.is_equal = False

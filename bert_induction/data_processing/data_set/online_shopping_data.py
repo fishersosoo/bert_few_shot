@@ -1,11 +1,12 @@
+import collections
+import os
 from collections import __init__
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from data_processing.data_set import Dataset
-from data_processing.read_data import log
+from data_processing.data_set import Dataset, log
 from model.bert import tokenization
 
 
@@ -49,17 +50,18 @@ class OnlineShoppingData(Dataset):
         dataset = pd.merge(dataset, class_info, on=["label", "cat"])
         return dataset, class_info
 
-    def train_test_split(self, dataset, class_info, training_set_info=None, training_set_class_num=None, *args,
+    def train_test_split(self, dataset, class_info, training_set_info=None, training_set_cat_num=7, *args,
                          **kwargs):
         if training_set_info is None:
             log.info(
                 "No saved train test split info. select {training_set_class_num} training classes randomly.".format(
-                    training_set_class_num=training_set_class_num))
-            training_set_info = class_info.sample(training_set_class_num)
+                    training_set_class_num=training_set_cat_num))
+            training_cats = class_info["cat"].sample(training_set_cat_num)
+            training_set_info = class_info[class_info["cat"].isin(training_cats)]
         else:
             log.info(
                 "Last train test split result is used.".format(
-                    training_set_class_num=training_set_class_num))
+                    training_set_class_num=training_set_cat_num))
         training_set = dataset[dataset["class"].isin(training_set_info["class"])]
         test_set_info = class_info[
             np.logical_not(class_info["class"].isin(training_set_info["class"]))]
@@ -89,11 +91,12 @@ class OnlineShoppingData(Dataset):
             support_set_text = []
             query_set = pd.DataFrame()
             # pick c class
-            for class_id, one_class in enumerate(training_set["class"].unique().sample(c)):
+            picked_classes = np.random.choice(training_set["class"].unique(), c, False)
+            for class_id, one_class in enumerate(picked_classes):
                 class_samples = training_set[training_set["class"] == one_class]
                 # select k support samples
                 support_text = class_samples.sample(k)["review"].to_list()
-                support_set_text.append(support_text.to_list())
+                support_set_text.append(support_text)
                 # select query samples
                 query = class_samples.sample(query_per_class)
                 query["class_id"] = class_id
@@ -134,7 +137,7 @@ class OnlineShoppingData(Dataset):
         class_num = len(class_labels)
         query_set_df = pd.DataFrame()
         for class_id, class_label in enumerate(class_labels):
-            if len(test_set[test_set["class"] == class_label]) <= sample_per_class:
+            if len(test_set[test_set["class"] == class_label]) > sample_per_class:
                 selected_examples = test_set[test_set["class"] == class_label].sample(sample_per_class)
             else:
                 selected_examples = test_set[test_set["class"] == class_label]
@@ -195,7 +198,8 @@ class OnlineShoppingData(Dataset):
                 writer.write(tf_example.SerializeToString())
             return len(examples)
 
-    def build_file_base_input_fn(self, input_file, config, max_seq_length, is_training, drop_remainder):
+    def build_file_base_input_fn(self, input_file, config, max_seq_length, batch_size, is_training,
+                                 drop_remainder=False):
         k = config.k
         c = config.c
         query_size = config.query_size
@@ -215,7 +219,6 @@ class OnlineShoppingData(Dataset):
             return example
 
         def input_fn(params):
-            batch_size = params["batch_size"]
 
             dataset = tf.data.TFRecordDataset(input_file)
             if is_training:
@@ -229,3 +232,43 @@ class OnlineShoppingData(Dataset):
             return dataset
 
         return input_fn
+
+
+def build_c_way_k_shot(raw_data_fp, c, k, query_per_class, training_iter_num, training_set_cat_num, output_dir):
+    data_name = "online_shopping_10_cats"
+    data_dir = os.path.join(output_dir, data_name, "{c}-way {k}-shot".format(c=c, k=k))
+    if not os.path.exists(data_dir):
+        os.mkdir(data_dir)
+    training_info_fp = os.path.join(data_dir, "train_info.csv")
+    training_info = None
+    if training_info_fp is not None and os.path.exists(training_info_fp):
+        training_info = pd.read_csv(training_info_fp, encoding="utf-8", index_col=None)
+    data_set = OnlineShoppingData()
+    data_df, class_info = data_set.read_raw_data_file(raw_data_fp)
+    training_df, training_info, test_df, test_info = data_set.train_test_split(data_df,
+                                                                               class_info,
+                                                                               training_info,
+                                                                               training_set_cat_num=training_set_cat_num)
+    if training_info_fp is not None:
+        training_info.to_csv(training_info_fp, encoding="utf-8", index=False)
+    training_examples = data_set.get_training_examples(training_df, c, k, query_per_class=query_per_class,
+                                                       training_iter_num=training_iter_num)
+    np.save(os.path.join(data_dir, "training_examples.npy"), training_examples, allow_pickle=True)
+    query_set_df, test_examples = data_set.get_test_examples(test_df, c * query_per_class, 1000, c, k)
+    np.save(os.path.join(data_dir, "test_examples.npy"), test_examples, allow_pickle=True)
+    query_set_df.to_csv(os.path.join(data_dir, "test.csv"), encoding="utf-8", index=False)
+
+
+def main():
+    build_c_way_k_shot(
+        raw_data_fp="/home/bert_few_shot/data/source/online_shopping_10_cats/online_shopping_10_cats.csv",
+        output_dir="/home/bert_few_shot/data",
+        c=2,
+        k=5,
+        query_per_class=10,
+        training_iter_num=3000,
+        training_set_cat_num=7)
+
+
+if __name__ == '__main__':
+    main()

@@ -10,15 +10,35 @@ class ModelConfig(BaseModelConfig):
     # seq_len: 每个样本特征数量
     # query_size: query set 样本数量
 
-    def __init__(self, k=5, dropout_prob=.1, embedding_size=300, hidden_size=128, attention_size=64, h=100):
+    def __init__(self,
+                 c=2,
+                 k=5,
+                 query_size=20,
+                 dropout_prob=.1,
+                 embedding_size=300,
+                 hidden_size=128,
+                 attention_size=64,
+                 h=100):
         """
         模型超参数（需要config文件中配置，和导出的模型一起打包）
         Args:
 
         """
+        self.c = c
         self.k = k
+        self.query_size = query_size
         self.dropout_prob = dropout_prob
         self.embedding_size = embedding_size
         self.hidden_size = hidden_size
         self.attention_size = attention_size
         self.h = h
+
+
+def main():
+    config = ModelConfig()
+    with open("/home/bert_few_shot/models/trained/induction/config.json", "w") as config_fd:
+        config_fd.write(config.to_json_string())
+
+
+if __name__ == '__main__':
+    main()

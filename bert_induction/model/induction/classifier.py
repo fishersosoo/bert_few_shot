@@ -1,50 +1,78 @@
 # encoding=utf-8
+"""运行配置，管理输入输出"""
 import os
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from data_processing import SegmentFixedTokenizer
+from data_processing import SegmentFixedTokenizer, get_tokenizer_cls
 from model.induction.config import ModelConfig
-from model.induction.modeling import write_example, model_fn_builder, file_based_input_fn_builder, CheckEmbedding
+from model.induction.modeling import write_example, model_fn_builder, file_based_input_fn_builder
+from model.common.base_func import CheckEmbedding
 
 
-def classifier(embedding_file, dict_path,
-               data_dir,
-               config_file,
-               output_dir,
-               max_seq_length=32,
-               init_checkpoint=None,
-               do_train=False,
-               do_eval=False,
-               do_predict=False,
-               train_batch_size=32,
-               eval_batch_size=8,
-               predict_batch_size=8,
-               num_train_epochs=3.0,
-               warmup_proportion=0.1,
-               save_checkpoints_steps=1000,
-               learning_rate=5e-5,
-               use_tpu=False,
-               predict_class_num=5,
-               ):
+def classifier(
+        data_dir,
+        config_path,
+        output_dir,
+        tokenizer,
+        tokenizer_dir,
+        data_set,
+        max_seq_length=32,
+        init_checkpoint=None,
+        do_train=False,
+        do_eval=False,
+        do_predict=False,
+        train_batch_size=32,
+        eval_batch_size=8,
+        predict_batch_size=8,
+        num_train_epochs=3.0,
+        warmup_proportion=0.1,
+        save_checkpoints_steps=1000,
+        learning_rate=5e-5,
+        use_tpu=False,
+        predict_class_num=5,
+):
+    """
+
+    Args:
+        data_dir:
+        config_path:
+        output_dir:
+        tokenizer:
+        tokenizer_dir:
+        data_set:
+        max_seq_length:
+        init_checkpoint:
+        do_train:
+        do_eval:
+        do_predict:
+        train_batch_size:
+        eval_batch_size:
+        predict_batch_size:
+        num_train_epochs:
+        warmup_proportion:
+        save_checkpoints_steps:
+        learning_rate:
+        use_tpu:
+        predict_class_num:
+
+    Returns:
+
+    """
     tf.logging.set_verbosity(tf.logging.INFO)
+
     if not do_train and not do_eval and not do_predict:
         raise ValueError(
             "At least one of `do_train`, `do_eval` or `do_predict' must be True.")
-    model_config = ModelConfig.from_json_file(config_file)
     tf.gfile.MakeDirs(output_dir)
-    tokenizer = SegmentFixedTokenizer(path=embedding_file, dict_path=dict_path)
+    tokenizer = get_tokenizer_cls(tokenizer)(
+        os.path.join(tokenizer_dir, "merge_sgns_bigram_char300.txt"),
+        os.path.join(tokenizer_dir, "user_dict.txt")
+    )
 
-    run_config = tf.contrib.tpu.RunConfig(
-        cluster=None,
-        master=None,
-        model_dir=output_dir,
-        save_checkpoints_steps=save_checkpoints_steps,
-        session_config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True)))
-
-
+    model_config, run_config = config_setup(config_path, output_dir, save_checkpoints_steps)
 
     example_nums = None
     num_train_steps = None
@@ -65,20 +93,22 @@ def classifier(embedding_file, dict_path,
         num_train_steps = int(
             example_nums / train_batch_size * num_train_epochs)
         num_warmup_steps = int(num_train_steps * warmup_proportion)
+        train_input_fn = data_set.build_file_base_input_fn(input_file=os.path.join(data_dir, "train.tf_record"),
+                                                           config=model_config,
+                                                           batch_size=train_batch_size,
+                                                           max_seq_length=max_seq_length,
+                                                           is_training=True)
 
-    model_fn = model_fn_builder(config=model_config, init_checkpoint=init_checkpoint, max_seq_length=max_seq_length,
-                                batch_size=batch_size,
+    model_fn = model_fn_builder(config=model_config,
+                                init_checkpoint=init_checkpoint,
+                                max_seq_length=max_seq_length,
                                 learning_rate=learning_rate,
-                                num_train_steps=num_train_steps, num_warmup_steps=num_warmup_steps,
-                                use_tpu=use_tpu)
-
-    estimator = tf.contrib.tpu.TPUEstimator(
-        use_tpu=use_tpu,
+                                num_train_steps=num_train_steps,
+                                num_warmup_steps=num_warmup_steps)
+    estimator = tf.estimator.Estimator(
         model_fn=model_fn,
-        config=run_config,
-        train_batch_size=train_batch_size,
-        eval_batch_size=eval_batch_size,
-        predict_batch_size=predict_batch_size)
+        model_dir=output_dir,
+        config=run_config)
 
     if do_train:
         train_file = os.path.join(data_dir, "train.tf_record")
@@ -87,7 +117,7 @@ def classifier(embedding_file, dict_path,
         tf.logging.info("  Batch size = %d", train_batch_size)
         tf.logging.info("  Num steps = %d", num_train_steps)
         train_input_fn = file_based_input_fn_builder(train_file, model_config, max_seq_length, True, True)
-        estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+        estimator.train(input_fn=train_input_fn, steps=num_train_steps)
 
     if do_eval:
         eval_steps = None
@@ -96,9 +126,6 @@ def classifier(embedding_file, dict_path,
                                           eval_file,
                                           max_seq_length=max_seq_length,
                                           tokenizer=tokenizer)
-        if use_tpu:
-            assert eval_examples_num % eval_batch_size == 0
-            eval_steps = int(eval_examples_num // eval_batch_size)
         eval_drop_remainder = True if use_tpu else False
         eval_input_fn = file_based_input_fn_builder(eval_file, model_config, max_seq_length, False, eval_drop_remainder)
         result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
@@ -190,3 +217,14 @@ def classifier(embedding_file, dict_path,
         result_df = pd.DataFrame(result_data)
         result_df[["sample_id", "embeddings"]].to_csv(output_embeddings_file, index=False)
         result_df.drop(columns=["embeddings"]).to_csv(output_predict_file, index=False)
+
+
+def config_setup(config_path, output_dir, save_checkpoints_steps):
+    model_config = ModelConfig.from_json_file(config_path)
+    run_config = tf.contrib.tpu.RunConfig(
+        cluster=None,
+        master=None,
+        model_dir=output_dir,
+        save_checkpoints_steps=save_checkpoints_steps,
+        session_config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True)))
+    return model_config, run_config

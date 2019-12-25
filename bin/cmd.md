@@ -3,7 +3,7 @@
 启动容器
 
 ```bash
-nvidia-docker run -itd --runtime=nvidia -p 6180:80 -p 6122:22 -p 6181:81 -v /sdb/data/liangzhanning/bert_few_shot:/home/bert_few_shot liangzhanning_tensorflow /bin/bash -c "/usr/sbin/sshd -D;screen -wipe;/bin/bash"
+nvidia-docker run -itd --runtime=nvidia -p 6180:80 -p 6122:22 -p 6181:81 --name="liangzhanning_tf" -v /sdb/data/liangzhanning/bert_few_shot:/home/bert_few_shot liangzhanning_tensorflow /bin/bash -c "/usr/sbin/sshd -D;screen -wipe;/bin/bash"
 
 ```
 

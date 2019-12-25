@@ -7,24 +7,12 @@ import numpy as np
 import tensorflow as tf
 
 from model.bert import tokenization
-from model.common.base_func import get_assignment_map_from_checkpoint
+from model.common.base_func import get_assignment_map_from_checkpoint, log_variables, get_shape_list
 from model.common.layers import self_attention_bi_lstm
 from model.common.optimization import create_optimizer
 from model.induction.classifier import classifier
 from model.induction.config import ModelConfig
 from model.induction.layers import induction, relation_model
-
-
-class CheckEmbedding:
-    def __init__(self, name):
-        self.is_equal = True
-        self.name = name
-
-    def __call__(self, a, b):
-        if self.is_equal:
-            if not np.array_equal(a, b):
-                tf.logging.warning("{name} not equal!".format(name=self.name))
-                self.is_equal = False
 
 
 def write_example(fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=False):
@@ -138,7 +126,7 @@ def file_based_input_fn_builder(input_file, config, max_seq_length, is_training,
 
 class InductionModel:
     def __init__(self, config, is_training,
-                 support_embeddings, batch_size, seq_len,
+                 support_embeddings, seq_len,
                  query_embeddings, query_label, scope=None):
         """
 
@@ -157,6 +145,7 @@ class InductionModel:
             dropout_prob = config.dropout_prob
         embedding_size = config.embedding_size
         k = config.k
+        batch_size, _ = get_shape_list(support_embeddings)
         support_embeddings = tf.reshape(support_embeddings, [batch_size * k, seq_len, embedding_size])
         query_embeddings = tf.reshape(query_embeddings, [batch_size, seq_len, embedding_size])
         encode_input = tf.concat([support_embeddings, query_embeddings],
@@ -176,7 +165,7 @@ class InductionModel:
                                                  query_input=query_encode)  # [batch_size,1]
 
 
-def create_model(config, is_training, support_embeddings, query_embeddings, batch_size, seq_len,
+def create_model(config, is_training, support_embeddings, query_embeddings, seq_len,
                  query_label):
     """
     创建模型，model_fn_builder中调用
@@ -199,7 +188,7 @@ def create_model(config, is_training, support_embeddings, query_embeddings, batc
                            is_training=is_training,
                            support_embeddings=support_embeddings,
                            query_embeddings=query_embeddings,
-                           query_label=query_label, batch_size=batch_size)
+                           query_label=query_label)
     with tf.variable_scope("loss"):
         tf.logging.info(query_label)  # [batch_size, 1]
         tf.logging.info(model.relation_score)  # [batch_size, 1]
@@ -207,19 +196,17 @@ def create_model(config, is_training, support_embeddings, query_embeddings, batc
     return loss, model.query_encode, model.class_vector, model.support_encode, model.relation_score
 
 
-def model_fn_builder(config, init_checkpoint, learning_rate, batch_size, max_seq_length,
-                     num_train_steps, num_warmup_steps, use_tpu, ):
+def model_fn_builder(config, init_checkpoint, learning_rate, max_seq_length,
+                     num_train_steps, num_warmup_steps):
     """
 
     Args:
         max_seq_length:
-        batch_size:
         config:
         init_checkpoint:
         learning_rate:
         num_train_steps:
         num_warmup_steps:
-        use_tpu:
 
     Returns:
 
@@ -231,51 +218,32 @@ def model_fn_builder(config, init_checkpoint, learning_rate, batch_size, max_seq
         query_label = features["query_label"]
         is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
-        loss, query_encode, class_vector, support_encode, relation_score = create_model(seq_len=max_seq_length,
-                                                                                        config=config,
-                                                                                        is_training=is_training,
-                                                                                        support_embeddings=support_embedding,
-                                                                                        query_embeddings=query_embedding,
-                                                                                        batch_size=batch_size,
-                                                                                        query_label=query_label)
+        loss, query_encode, class_vector, support_encode, relation_score = create_model(
+            seq_len=max_seq_length,
+            config=config,
+            is_training=is_training,
+            support_embeddings=support_embedding,
+            query_embeddings=query_embedding,
+            query_label=query_label
+        )
 
         # init_checkpoint
         tvars = tf.trainable_variables()
         initialized_variable_names = {}
-        scaffold_fn = None
         if init_checkpoint:
             (assignment_map, initialized_variable_names
              ) = get_assignment_map_from_checkpoint(tvars, init_checkpoint)
-            if use_tpu:
-
-                def tpu_scaffold():
-                    tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-                    return tf.train.Scaffold()
-
-                scaffold_fn = tpu_scaffold
-            else:
-                tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+            tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
         # logging checkpoint
-        tf.logging.info("**** Trainable Variables ****")
-        for var in tvars:
-            init_string = ""
-            if var.name in initialized_variable_names:
-                init_string = ", *INIT_FROM_CKPT*"
-            tf.logging.info("  name = %s, shape = %s%s", var.name, var.shape,
-                            init_string)
+        log_variables(initialized_variable_names, tvars)
 
         output_spec = None
         if mode == tf.estimator.ModeKeys.TRAIN:
             train_op = create_optimizer(
-                loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
+                loss, learning_rate, num_train_steps, num_warmup_steps)
+            output_spec = tf.estimator.EstimatorSpec(mode=mode, loss=loss, train_op=train_op)
 
-            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
-                mode=mode,
-                loss=loss,
-                train_op=train_op,
-                scaffold_fn=scaffold_fn)
         elif mode == tf.estimator.ModeKeys.EVAL:
-
             def metric_fn(loss, query_label, predict_class):
                 accuracy = tf.metrics.accuracy(
                     labels=query_label, predictions=predict_class)
@@ -287,19 +255,22 @@ def model_fn_builder(config, init_checkpoint, learning_rate, batch_size, max_seq
 
             eval_metrics = (metric_fn,
                             [loss, query_label, relation_score])
-            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+
+            output_spec = tf.estimator.EstimatorSpec(
                 mode=mode,
                 loss=loss,
-                eval_metrics=eval_metrics,
-                scaffold_fn=scaffold_fn)
+                eval_metric_ops=eval_metrics
+            )
 
         else:
-            output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+            output_spec = tf.estimator.EstimatorSpec(
                 mode=mode,
                 predictions={
-                    "query_embedding": query_encode, "class_vector": class_vector,
-                    "support_embedding": support_encode, "relation_score": relation_score},
-                scaffold_fn=scaffold_fn)
+                    "query_embedding": query_encode,
+                    "class_vector": class_vector,
+                    "support_embedding": support_encode,
+                    "relation_score": relation_score},
+            )
         return output_spec
 
     return model_fn
