@@ -83,3 +83,4 @@ class SegmentFixedTokenizer(BaseTokenizer):
         else:
             vectors.append(vector)
         return vectors
+

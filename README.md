@@ -19,3 +19,6 @@ random acc: 0.2
 acc: 0.61
 kappa: 0.51
 
+## 数据集处理流程
+
+一般过程，是调用`read_raw_data_file`解析数据文件，然后调用`train_test_split`划分测试集和训练集，调用`get_training_examples`和`get_test_examples`获取样本并使用`write_example`保存成TF文件。在训练或者预测的过程中调用`build_file_base_input_fn`构建模型输入。

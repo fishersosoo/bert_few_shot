@@ -16,15 +16,16 @@ from model.induction.layers import induction_with_DR, relation_model
 
 class InductionModel:
     def __init__(self, config, is_training,
-                 support_embeddings, seq_len,
-                 query_embeddings, query_label, scope=None):
+                 support_ids, seq_len,
+                 query_ids, query_label, scope=None):
         """
 
         Args:
             config (ModelConfig):
-            support_embeddings: float64 Tensor [batch_size, c * k * seq_len * embedding_size]
-            query_embeddings: float64 Tensor [batch_size, query_size * seq_len * embedding_size]
-            query_label: int32 Tensor [batch_size, query_size]
+            support_ids: int64 Tensor [batch_size, c * k * seq_len * embedding_size]
+            support_mask: int64 
+            query_ids: int64 Tensor [batch_size, query_size * seq_len * embedding_size]
+            query_label: int64 Tensor [batch_size, query_size]
             is_training:
             scope:
         """
@@ -36,10 +37,10 @@ class InductionModel:
         c = config.c
         k = config.k
         query_size = config.query_size
-        batch_size, _ = get_shape_list(support_embeddings)
-        support_embeddings = tf.reshape(support_embeddings, [batch_size * c * k, seq_len, embedding_size])
-        query_embeddings = tf.reshape(query_embeddings, [batch_size * query_size, seq_len, embedding_size])
-        encode_input = tf.concat([support_embeddings, query_embeddings],
+        batch_size, _ = get_shape_list(support_ids)
+        support_ids = tf.reshape(support_ids, [batch_size * c * k, seq_len, embedding_size])
+        query_ids = tf.reshape(query_ids, [batch_size * query_size, seq_len, embedding_size])
+        encode_input = tf.concat([support_ids, query_ids],
                                  0)  # [batch_size * (c * k + query_size), seq_len, embedding_size]
         encode_output = self_attention_bi_lstm(encode_input, config.hidden_size, config.attention_size, dropout_prob)
         support_encode = tf.reshape(encode_output[:batch_size * c * k],
@@ -79,8 +80,8 @@ def create_model(config, is_training, support_embeddings, query_embeddings, seq_
     """
     model = InductionModel(config=config, seq_len=seq_len,
                            is_training=is_training,
-                           support_embeddings=support_embeddings,
-                           query_embeddings=query_embeddings,
+                           support_ids=support_embeddings,
+                           query_ids=query_embeddings,
                            query_label=query_label)
     with tf.variable_scope("loss"):
         query_label = tf.one_hot(query_label, depth=config.c)  # [batch_size, query_size, c]

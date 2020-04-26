@@ -2,9 +2,19 @@
 
 启动容器
 
-```bash
-nvidia-docker run -itd --runtime=nvidia -p 6180:80 -p 6122:22 -p 6181:81 --name="liangzhanning_tf" -v /sdb/data/liangzhanning/bert_few_shot:/home/bert_few_shot liangzhanning_tensorflow /bin/bash -c "/usr/sbin/sshd -D;screen -wipe;/bin/bash"
+端口使用
 
+| host端口 | 容器端口 | 用途        |
+| -------- | -------- | ----------- |
+| 6180     | 80       | tensorboard |
+| 6122     | 22       | ssh         |
+| 6181     | 81       | notebook    |
+| 6194     | 1194     | openvpn     |
+
+
+
+```bash
+nvidia-docker run -itd --runtime=nvidia -p 6180:80 -p 6122:22 -p 6181:81 -p 6194:1194 --name="liangzhanning_tf" --cap-add NET_ADMIN -v /sdb/data/liangzhanning/bert_few_shot:/home/bert_few_shot liangzhanning_tensorflow /bin/bash -c "/usr/sbin/sshd -D;screen -wipe;/bin/bash"
 ```
 
 ```bash
@@ -40,6 +50,10 @@ screen -S jupyter
 ```bash
 jupyter notebook --port=81 --ip='0.0.0.0' --notebook-dir='/home/bert_few_shot' --no-browser --allow-root
 
+```
+
+```bash
+docker commit liangzhanning_tf  liangzhanning_tensorflow
 ```
 
 
@@ -90,6 +104,6 @@ CUDA_VISIBLE_DEVICES=3 python bert/run_classifier.py --task_name=shopping \
 tensorboard 启动
 
 ```ba
-tensorboard --host=0.0.0.0 --port=80 --logdir=/home/bert_few_shot/models/test_fine
+tensorboard --host=0.0.0.0 --port=80 --logdir=/home/bert_few_shot/models/trained/induction
 ```
 

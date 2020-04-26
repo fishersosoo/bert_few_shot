@@ -7,52 +7,26 @@ log.setLevel(logging.INFO)
 
 
 class Dataset(object):
+    """数据基类。对象不保存任何信息，是无状态的。"""
+
     @abstractmethod
     def read_raw_data_file(self, raw_fp, *args, **kwargs):
+        """        读取原始文件        """
         raise NotImplementedError()
 
     @abstractmethod
     def train_test_split(self, *args, **kwargs):
+        """划分训练集和测试集"""
         raise NotImplementedError()
 
     @abstractmethod
     def get_training_examples(self, *args, **kwargs):
+        """获取训练样本"""
         raise NotImplementedError()
 
     @abstractmethod
     def get_test_examples(self, *args, **kwargs):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def write_example(self, *args, **kwargs):
-        """
-        将输入数据转化成TFRecord文件
-        每一个 training 迭代写成一个example
-        Args:
-            fp_in:
-            fp_out:
-            max_seq_length:
-            tokenizer:
-            do_predict:
-
-        Returns:
-
-        """
-        raise NotImplementedError()
-
-    @abstractmethod
-    def build_file_base_input_fn(self, *args, **kwargs):
-        """
-        读取TF_Record构建输入pipeline
-        Args:
-            input_file:
-            params:
-            is_training:
-            drop_remainder:
-
-        Returns:
-
-        """
+        """获取测试样本"""
         raise NotImplementedError()
 
     @abstractmethod
@@ -60,14 +34,6 @@ class Dataset(object):
                                      tokenizer):
         """
         构建成features，配合build_input_fn使用
-        Args:
-            examples:
-            label_list:
-            params:
-            tokenizer:
-
-        Returns:
-
         """
         raise NotImplementedError()
 

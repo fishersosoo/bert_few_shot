@@ -12,7 +12,6 @@ flags.DEFINE_string("model_config", None, "模型配置文件目录")
 flags.DEFINE_string("tokenizer", "segment_fixed_tokenizer", "tokenizer name")
 flags.DEFINE_string("tokenizer_dir", None, "")
 flags.DEFINE_string("output_dir", None, "结果输出目录")
-flags.DEFINE_string("record_codec", None, "record_codec")
 
 # training params
 flags.DEFINE_string("data_set", None, "data set name")
@@ -42,7 +41,6 @@ def main(_):
                      num_train_epochs=FLAGS.num_train_epochs,
                      learning_rate=FLAGS.learning_rate,
                      warmup_proportion=FLAGS.warmup_proportion,
-                     record_codec=FLAGS.record_codec,
                      use_exist_examples=FLAGS.use_exist_examples)
 
 
@@ -52,6 +50,4 @@ if __name__ == '__main__':
     flags.mark_flag_as_required("output_dir")
     flags.mark_flag_as_required("data_set")
     flags.mark_flag_as_required("model_dir")
-    flags.mark_flag_as_required("record_codec")
-
     tf.app.run()

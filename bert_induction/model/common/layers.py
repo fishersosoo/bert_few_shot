@@ -44,4 +44,4 @@ def self_attention_bi_lstm(input, hidden_size, attention_size, dropout_prob,name
         cell_bw = rnn.BasicLSTMCell(hidden_size)
         rnn_outputs, _ = bidirectional_dynamic_rnn(cell_fw, cell_bw, input, dtype=tf.float32)
         out = tf.concat(rnn_outputs, -1)  # [batch_size, max_seq_len, hidden_size * 2]
-        return self_attention(out, attention_size, dropout_prob)
+        return self_attention(out, attention_size, dropout_prob,name="attention")

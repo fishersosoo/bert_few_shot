@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from data_processing import get_tokenizer_cls, get_dataset_cls, get_record_codec
+from data_processing import get_tokenizer_cls, get_dataset_cls
 from model.induction.config import ModelConfig
 from model.induction.modeling import model_fn_builder
 
@@ -33,7 +33,6 @@ class Classifier(object):
     def train(self,
               example_fp,
               data_set,
-              record_codec,
               model_dir=None,
               max_seq_length=32,
               init_checkpoint=None,
@@ -45,26 +44,25 @@ class Classifier(object):
 
         train_examples = example_fp
         train_record = os.path.join(self.output_dir, "train.tf_record")
-
         data_set = get_dataset_cls(data_set)()
-        example_nums = get_record_codec(record_codec).write_example(
+        example_nums = data_set.write_example(
             fp_in=train_examples,
             fp_out=train_record,
             max_seq_length=max_seq_length,
-            tokenizer=self.tokenizer, use_exist=use_exist_examples)
+            tokenizer=self.tokenizer,use_exist=use_exist_examples)
         num_train_steps = int(
             example_nums / batch_size * num_train_epochs)
         num_warmup_steps = int(num_train_steps * warmup_proportion)
-        train_input_fn = get_record_codec(record_codec).build_file_base_input_fn(input_file=train_record,
-                                                                                 model_config=self.model_config,
-                                                                                 batch_size=batch_size,
-                                                                                 max_seq_length=max_seq_length,
-                                                                                 is_training=True)
+        train_input_fn = data_set.build_file_base_input_fn(input_file=train_record,
+                                                           model_config=self.model_config,
+                                                           batch_size=batch_size,
+                                                           max_seq_length=max_seq_length,
+                                                           is_training=True)
         if model_dir is None:
             model_dir = self.output_dir
-            run_config = self.run_config
+            run_config=self.run_config
         else:
-            run_config = self.run_config.replace(model_dir=model_dir)
+            run_config=self.run_config.replace(model_dir=model_dir)
         model_fn = model_fn_builder(config=self.model_config,
                                     init_checkpoint=init_checkpoint,
                                     max_seq_length=max_seq_length,
@@ -81,11 +79,11 @@ class Classifier(object):
         tf.logging.info("  Num steps = %d", num_train_steps)
         estimator.train(input_fn=train_input_fn, steps=num_train_steps)
 
-    def eval(self, example_fp,record_codec, max_seq_length, init_checkpoint, data_set, batch_size):
+    def eval(self, example_fp, max_seq_length, init_checkpoint, data_set, batch_size):
         eval_examples = example_fp
         eval_file = os.path.join(self.output_dir, "eval.tf_record")
         data_set = get_dataset_cls(data_set)()
-        eval_examples_num = get_record_codec(record_codec).write_example(eval_examples,
+        eval_examples_num = data_set.write_example(eval_examples,
                                                    eval_file,
                                                    max_seq_length=max_seq_length,
                                                    do_predict=False,
@@ -99,7 +97,7 @@ class Classifier(object):
             config=self.run_config)
         data_set = get_dataset_cls(data_set)()
 
-        eval_input_fn = get_record_codec(record_codec).build_file_base_input_fn(input_file=os.path.join(example_fp, "eval.tf_record"),
+        eval_input_fn = data_set.build_file_base_input_fn(input_file=os.path.join(example_fp, "eval.tf_record"),
                                                           model_config=self.model_config,
                                                           batch_size=batch_size,
                                                           max_seq_length=max_seq_length,
@@ -113,14 +111,14 @@ class Classifier(object):
                 tf.logging.info("  %s = %s", key, str(result[key]))
                 writer.write("%s = %s\n" % (key, str(result[key])))
 
-    def predict(self, example_fp, data_set,record_codec,
+    def predict(self, example_fp, data_set,
                 max_seq_length, predict_class_num, init_checkpoint,
                 output_dir, batch_size):
         predict_examples = example_fp
         predict_file = os.path.join(example_fp, "predict.tf_record")
         data_set = get_dataset_cls(data_set)()
 
-        predict_iter_num = get_record_codec(record_codec).write_example(
+        predict_iter_num = data_set.write_example(
             predict_examples,
             predict_file,
             do_predict=True,
@@ -135,7 +133,7 @@ class Classifier(object):
             model_fn=model_fn,
             config=self.run_config
         )
-        predict_input_fn = get_record_codec(record_codec).build_file_base_input_fn(
+        predict_input_fn = data_set.build_file_base_input_fn(
             input_file=predict_file,
             model_config=self.model_config,
             max_seq_length=max_seq_length,

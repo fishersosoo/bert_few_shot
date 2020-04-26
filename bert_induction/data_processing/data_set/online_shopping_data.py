@@ -35,7 +35,7 @@ class OnlineShoppingData(Dataset):
             class_info. DataFrame with columns ["cat", "label", "class"]
                 字段意义同上，用于记录"cat", "label" 和 "class" 的对应关系
         """
-        dataset = pd.read_csv(raw_fp, encoding="utf-8")
+        dataset = pd.read_csv(raw_fp, encoding="utf-8", index_col=None)
         cats = dataset["cat"].drop_duplicates()
         labels = dataset["label"].drop_duplicates()
         info = {"class": [], "cat": [], "label": []}
@@ -56,7 +56,7 @@ class OnlineShoppingData(Dataset):
             log.info(
                 "No saved train test split info. select {training_set_class_num} training classes randomly.".format(
                     training_set_class_num=training_set_cat_num))
-            training_cats = class_info["cat"].sample(training_set_cat_num)
+            training_cats = np.random.choice(class_info["cat"].unique(), training_set_cat_num, False)
             training_set_info = class_info[class_info["cat"].isin(training_cats)]
         else:
             log.info(
@@ -143,6 +143,7 @@ class OnlineShoppingData(Dataset):
                 selected_examples = test_set[test_set["class"] == class_label]
             selected_examples["class_id"] = class_id
             query_set_df = query_set_df.append(selected_examples, ignore_index=True)
+        query_set_df["sample_id"] = range(len(query_set_df))
         iter_per_run = int(np.ceil(class_num / c))
         examples = []
         for run_id in range(int(np.ceil(len(query_set_df) / query_size))):
@@ -169,74 +170,12 @@ class OnlineShoppingData(Dataset):
                     examples.append(example)
         return query_set_df, examples
 
-    def write_example(self, fp_in, fp_out, max_seq_length, tokenizer=None, do_predict=False):
-        with tf.python_io.TFRecordWriter(fp_out) as writer:
-            examples = np.load(fp_in, allow_pickle=True)
-            for example in examples:
-                features = collections.OrderedDict()
-                support_embeddings = []
-                query_embeddings = []
-                for one_text in example["support_set_text"].reshape(-1):
-                    one_text = tokenization.convert_to_unicode(one_text)
-                    vector = tokenizer.convert_to_vector(one_text, max_len=max_seq_length)
-                    support_embeddings.append(vector)
-                for one_text in example["query_set_text"]:
-                    one_text = tokenization.convert_to_unicode(one_text)
-                    vector = tokenizer.convert_to_vector(one_text, max_len=max_seq_length)
-                    query_embeddings.append(vector)
-                features["support_embedding"] = tf.train.Feature(
-                    float_list=tf.train.FloatList(value=np.array(support_embeddings).reshape(-1)))
-                features["query_embedding"] = tf.train.Feature(
-                    float_list=tf.train.FloatList(value=np.array(query_embeddings).reshape(-1)))
-                if do_predict:
-                    features["query_label"] = tf.train.Feature(
-                        int64_list=tf.train.Int64List(value=example["label"].reshape(-1)))
-                else:
-                    features["query_label"] = tf.train.Feature(
-                        int64_list=tf.train.Int64List(value=[0] * len(example["query_set_text"])))
-                tf_example = tf.train.Example(features=tf.train.Features(feature=features))
-                writer.write(tf_example.SerializeToString())
-            return len(examples)
-
-    def build_file_base_input_fn(self, input_file, config, max_seq_length, batch_size, is_training,
-                                 drop_remainder=False):
-        k = config.k
-        c = config.c
-        query_size = config.query_size
-        embedding_size = config.embedding_size
-
-        def _decode_record(record):
-            name_to_features = {
-                "support_embedding": tf.FixedLenFeature([c * k * max_seq_length * embedding_size], tf.float32),
-                "query_embedding": tf.FixedLenFeature([query_size * max_seq_length * embedding_size], tf.float32),
-                "query_label": tf.FixedLenFeature([query_size], tf.int64)}
-            example = tf.parse_single_example(record, name_to_features)
-            for name in list(example.keys()):
-                t = example[name]
-                if t.dtype == tf.float64:
-                    t = tf.cast(t, dtype=tf.float32)
-                example[name] = t
-            return example
-
-        def input_fn(params):
-
-            dataset = tf.data.TFRecordDataset(input_file)
-            if is_training:
-                dataset = dataset.shuffle(buffer_size=5000)
-                dataset = dataset.repeat()
-
-            dataset = dataset.map(lambda record: _decode_record(record), num_parallel_calls=4)
-            dataset = dataset.batch(batch_size=batch_size,
-                                    drop_remainder=drop_remainder)
-            dataset = dataset.prefetch(buffer_size=100)
-            return dataset
-
-        return input_fn
-
 
 def build_c_way_k_shot(raw_data_fp, c, k, query_per_class, training_iter_num, training_set_cat_num, output_dir):
     data_name = "online_shopping_10_cats"
-    data_dir = os.path.join(output_dir, data_name, "{c}-way {k}-shot".format(c=c, k=k))
+    data_dir = os.path.join(output_dir, data_name, "{c}-way_{k}-shot".format(c=c, k=k))
+    if not os.path.exists(os.path.join(output_dir, data_name)):
+        os.mkdir(os.path.join(output_dir, data_name))
     if not os.path.exists(data_dir):
         os.mkdir(data_dir)
     training_info_fp = os.path.join(data_dir, "train_info.csv")
