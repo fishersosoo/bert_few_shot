@@ -19,9 +19,6 @@ class ModelConfig(BaseModelConfig):
                  k=5,
                  query_size=20,
                  dropout_prob=.1,
-                 embedding_size=300,
-                 hidden_size=128,
-                 attention_size=64,
                  h=100):
         """
         模型超参数（需要config文件中配置，和导出的模型一起打包）
@@ -30,9 +27,6 @@ class ModelConfig(BaseModelConfig):
         self.k = k
         self.query_size = query_size
         self.dropout_prob = dropout_prob
-        self.embedding_size = embedding_size
-        self.hidden_size = hidden_size
-        self.attention_size = attention_size
         self.h = h
 
 

@@ -1,246 +1,340 @@
 # encoding=utf-8
 """运行配置，管理输入输出"""
 import os
+from configparser import ConfigParser
 
 import numpy as np
+import shutil
 import pandas as pd
 import tensorflow as tf
+import re
+from data_processing import get_tokenizer
+from model.albert_induction.config import ModelConfig as InductionConfig
+from model.albert_zh import tokenization
+from model.albert_zh.modeling import BertConfig
+from model.albert_induction.modeling import model_fn_builder
 
-from data_processing import get_tokenizer_cls, get_dataset_cls
-from model.induction.config import ModelConfig
-from model.induction.modeling import model_fn_builder
+
+def file_based_input_fn_builder(input_file, is_training, batch_size, max_len, induction_config,
+                                drop_remainder=True):
+    name_to_features = {
+        "support_text_ids": tf.FixedLenFeature([induction_config.c * induction_config.k * max_len], tf.int64),
+        "support_text_mask": tf.FixedLenFeature([induction_config.c * induction_config.k * max_len], tf.int64),
+        "query_text_ids": tf.FixedLenFeature([induction_config.query_size * max_len], tf.int64),
+        "query_text_mask": tf.FixedLenFeature([induction_config.query_size * max_len], tf.int64),
+        "query_label": tf.FixedLenFeature([induction_config.query_size, induction_config.c], tf.int64)
+
+    }
+
+    def _decode_record(record, name_to_features):
+        """Decodes a record to a TensorFlow example."""
+        example = tf.parse_single_example(record, name_to_features)
+        for name in list(example.keys()):
+            t = example[name]
+            if t.dtype == tf.int64:
+                t = tf.to_int32(t)
+            example[name] = t
+        return example
+
+    def input_fn(params):
+        d = tf.data.TFRecordDataset(input_file)
+        if is_training:
+            d = d.repeat()
+            d = d.shuffle(buffer_size=100)
+        d = d.apply(
+            tf.contrib.data.map_and_batch(
+                lambda record: _decode_record(record, name_to_features),
+                batch_size=batch_size,
+                drop_remainder=drop_remainder))
+        return d
+
+    return input_fn
+
+
+def input_fn_builder(features, batch_size):
+    """
+    create input_fn for prediction
+    Args:
+        features:
+            "support_text_ids": int array with shape [num_examples, c, k, seq_len]
+            "support_text_mask": int array with shape [num_examples, c, k, seq_len]
+            "query_text_ids": int array with shape [num_examples, query_size, seq_len]
+            "query_text_mask": int array with shape [num_examples, query_size, seq_len]
+
+    Returns:
+        input_fn
+    """
+
+    support_text_ids = np.array(features["support_text_ids"])
+    support_text_mask = np.array(features["support_text_mask"])
+    query_text_ids = np.array(features["query_text_ids"])
+    query_text_mask = np.array(features["query_text_mask"])
+    num_examples, c, k, seq_len = support_text_ids.shape
+    _, query_size, _ = query_text_ids.shape
+    query_label = np.zeros([num_examples, query_size, c]).astype(int)
+
+    def input_fn(params):
+        d = tf.data.Dataset.from_tensor_slices({
+            "support_text_ids": tf.constant(
+                support_text_ids.reshape([num_examples, c * k * seq_len]), shape=[num_examples, c * k * seq_len],
+                dtype=tf.int32
+            ),
+            "support_text_mask": tf.constant(
+                support_text_mask.reshape([num_examples, c * k * seq_len]), shape=[num_examples, c * k * seq_len],
+                dtype=tf.int32
+            ),
+            "query_text_ids": tf.constant(
+                query_text_ids.reshape([num_examples, query_size * seq_len]),
+                shape=[num_examples, query_size * seq_len],
+                dtype=tf.int32
+            ),
+            "query_text_mask": tf.constant(
+                query_text_mask.reshape([num_examples, query_size * seq_len]),
+                shape=[num_examples, query_size * seq_len],
+                dtype=tf.int32
+            ),
+            "query_label": tf.constant(
+                query_label.reshape([num_examples, query_size * c]),
+                shape=[num_examples, query_size * c],
+                dtype=tf.int32
+            )
+        })
+        d = d.batch(batch_size=1, drop_remainder=True)
+        return d
+
+    return input_fn
 
 
 class Classifier(object):
-    def __init__(self,
-                 model_config_path,
-                 tokenizer,
-                 output_dir,
-                 tokenizer_dir,
-                 save_checkpoints_steps=5000):
-        tf.logging.set_verbosity(tf.logging.INFO)
-        self.tokenizer = get_tokenizer_cls(tokenizer)(
-            os.path.join(tokenizer_dir, "merge_sgns_bigram_char300.txt"),
-            os.path.join(tokenizer_dir, "user_dict.txt")
-        )
+    def __init__(self):
+        self.estimator = None
+        self._tokenizer = None
+        self._bert_config = None
+        self._induction_config = None
+        self._run_config = tf.estimator.RunConfig(
+            session_config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True)))
 
-        tf.gfile.MakeDirs(output_dir)
-        self.output_dir = output_dir
-        self.model_config, self.run_config = config_setup(model_config_path,
-                                                          output_dir,
-                                                          save_checkpoints_steps)
+    def _get_meta(self, model_dir):
+        """
+        读取模型目录的meta信息
+        Args:
+            model_dir:
+
+        Returns:
+
+        """
+        path_re = re.compile(r".*_path")
+        meta_dict = dict()
+        config = ConfigParser()
+        config.read(os.path.join(model_dir, "meta.ini"))
+        for section in config.sections():
+            meta_dict[section] = dict()
+            for name, value in config.items(section):
+                if re.match(path_re, name) is not None:
+                    meta_dict[section][name] = os.path.join(model_dir, value)
+                else:
+                    meta_dict[section][name] = value
+        return meta_dict
+
+    def load(self, model_dir):
+        """
+        加载训练好的模型，设置estimator
+        Args:
+            model_dir: 模型目录
+
+        Returns:
+
+        """
+        self._model_dir = model_dir
+        self._meta = self._get_meta(model_dir=model_dir)
+        self._tokenizer = get_tokenizer(self._meta)
+        self._induction_config = InductionConfig.from_json_file(self._meta["induction"]["config_path"])
+        self._bert_config = BertConfig.from_json_file(self._meta["bert"]["config_path"])
+
+    def predict(self, support_text, query_text, batch_size=20):
+        """
+
+        Args:
+            support_text: string array [k]
+            query_text: string array
+
+        Returns:
+            ret: dict
+            "score": float array same len as query_text
+        """
+        self._induction_config.c = 1
+        self._induction_config.query_size = batch_size
+        self._induction_config.k = len(support_text)
+        model_fn = model_fn_builder(
+            induction_config=self._induction_config,
+            bert_config=self._bert_config,
+            init_checkpoint=self._meta["model"]["checkpoint_path"],
+            seq_len=int(self._meta["tokenizer"]["max_len"])
+        )
+        self.estimator = tf.estimator.Estimator(
+            model_fn=model_fn,
+            model_dir=self._model_dir,
+            config=self._run_config)
+        features = self._build_features(query_text, support_text)
+        input_fn = input_fn_builder(features, 1)
+        results = [one for one in self.estimator.predict(input_fn=input_fn)]
+        ret = self._parse_results(results)
+        ret_drop = dict()
+        for k, v in ret.items():
+            ret_drop[k] = v[:len(query_text)]
+        return ret_drop
+
+    def _build_features(self, query_text, support_text):
+        features = dict()
+        features["query_text_ids"] = []  # [sample_num ,query_size, max_len]
+        features["query_text_mask"] = []
+        features["query_label"] = []  # [sample_num ,query_size, c]
+        padding_query_label = [[0] * self._induction_config.c] * self._induction_config.query_size
+        support_ids = []
+        support_mask = []
+        for text in support_text:
+            ids, mask = self._tokenizer.convert_to_vector(tokenization.convert_to_unicode(text),
+                                                          int(self._meta["tokenizer"]["max_len"]))
+            support_ids.append(ids)
+            support_mask.append(mask)
+        padding_ids = []
+        padding_mask = []
+        for i in range(self._induction_config.k):
+            empty_ids, empty_mask = self._tokenizer.convert_to_vector("",
+                                                                      int(self._meta["tokenizer"]["max_len"]))
+            padding_ids.append(empty_ids)
+            padding_mask.append(empty_mask)
+        single_example_ids = [support_ids]
+        single_example_mask = [support_mask]
+        while len(single_example_ids) < self._induction_config.c:
+            # 　padding empty class
+            single_example_ids.append(padding_ids)
+            single_example_mask.append(padding_mask)
+        query_size = self._induction_config.query_size
+        sample_num = np.ceil(len(query_text) / query_size).astype(int)
+        features["support_text_ids"] = [single_example_ids] * sample_num  # [sample_num, c, k, max_len]
+        features["support_text_mask"] = [single_example_mask] * sample_num
+        for sample_index in range(sample_num):
+            single_query_ids = []
+            single_query_mask = []
+            for query_index in range(query_size):
+                if sample_index * query_size + query_index >= len(query_text):
+                    text = ""
+                else:
+                    text = query_text[sample_index * query_size + query_index]
+                ids, mask = self._tokenizer.convert_to_vector(
+                    tokenization.convert_to_unicode(text),
+                    int(self._meta["tokenizer"]["max_len"]))
+                single_query_ids.append(ids)
+                single_query_mask.append(mask)
+            features["query_text_mask"].append(single_query_mask)
+            features["query_text_ids"].append(single_query_ids)
+            features["query_label"].append(padding_query_label)
+        return features
+
+    def _parse_results(self, results):
+
+        query_size = self._induction_config.query_size
+        ret = {"score": []}
+        for result in results:
+            for query_index in range(query_size):
+                ret["score"].append(result["relation_score"][query_index][0])
+        return ret
 
     def train(self,
-              example_fp,
-              data_set,
-              model_dir=None,
-              max_seq_length=32,
+              training_data_path,
+              induction_config,
+              bert_config,
+              tokenizer_name,
+              vocab_path,
+              file_based_convert_examples_to_features_fn,
+              use_existed=True,
+              save_dir=None,
+              max_len=128,
               init_checkpoint=None,
               batch_size=32,
               num_train_epochs=3.0,
               learning_rate=5e-5,
               warmup_proportion=0.1,
-              use_exist_examples=False):
+              ):
+        """
 
-        train_examples = example_fp
-        train_record = os.path.join(self.output_dir, "train.tf_record")
-        data_set = get_dataset_cls(data_set)()
-        example_nums = data_set.write_example(
-            fp_in=train_examples,
-            fp_out=train_record,
-            max_seq_length=max_seq_length,
-            tokenizer=self.tokenizer,use_exist=use_exist_examples)
-        num_train_steps = int(
-            example_nums / batch_size * num_train_epochs)
+        Args:
+            training_data_path:
+            induction_config:
+            bert_config:
+            tokenizer_name:
+            vocab_path:
+            file_based_convert_examples_to_features_fn:
+                convert train/test data to "TFrecord" file
+`               def file_based_convert_examples_to_features_fn(training_data_path, tokenizer, save_dir, max_len, induction_config):
+
+            save_dir:
+            max_len:
+            init_checkpoint:
+            batch_size:
+            num_train_epochs:
+            learning_rate:
+            warmup_proportion:
+
+        Returns:
+
+        """
+        meta_dict = {"tokenizer": {"name": tokenizer_name, "vocab_path": vocab_path, "max_len": max_len}}
+        tokenizer = get_tokenizer(meta_dict)
+        sample_num = file_based_convert_examples_to_features_fn(training_data_path, tokenizer, save_dir, max_len,
+                                                                induction_config, use_existed=use_existed)
+        num_train_steps = int(sample_num / batch_size * num_train_epochs)
         num_warmup_steps = int(num_train_steps * warmup_proportion)
-        train_input_fn = data_set.build_file_base_input_fn(input_file=train_record,
-                                                           model_config=self.model_config,
-                                                           batch_size=batch_size,
-                                                           max_seq_length=max_seq_length,
-                                                           is_training=True)
-        if model_dir is None:
-            model_dir = self.output_dir
-            run_config=self.run_config
-        else:
-            run_config=self.run_config.replace(model_dir=model_dir)
-        model_fn = model_fn_builder(config=self.model_config,
+
+        input_fn = file_based_input_fn_builder(os.path.join(save_dir, "train.tf_record"),
+                                               is_training=True,
+                                               batch_size=batch_size,
+                                               max_len=max_len,
+                                               induction_config=induction_config)
+        model_fn = model_fn_builder(induction_config=induction_config,
+                                    bert_config=bert_config,
                                     init_checkpoint=init_checkpoint,
-                                    max_seq_length=max_seq_length,
+                                    seq_len=max_len,
                                     learning_rate=learning_rate,
                                     num_train_steps=num_train_steps,
-                                    num_warmup_steps=num_warmup_steps)
+                                    num_warmup_steps=num_warmup_steps
+                                    )
+        run_config = tf.estimator.RunConfig(
+            session_config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True)))
+
         estimator = tf.estimator.Estimator(
             model_fn=model_fn,
-            model_dir=model_dir,
+            model_dir=save_dir,
             config=run_config)
+
         tf.logging.info("***** Running training *****")
-        tf.logging.info("  Num examples = %d", example_nums)
+        tf.logging.info("  Num examples = %d", sample_num)
         tf.logging.info("  Batch size = %d", batch_size)
         tf.logging.info("  Num steps = %d", num_train_steps)
-        estimator.train(input_fn=train_input_fn, steps=num_train_steps)
+        estimator.train(input_fn, max_steps=num_train_steps)
 
-    def eval(self, example_fp, max_seq_length, init_checkpoint, data_set, batch_size):
-        eval_examples = example_fp
-        eval_file = os.path.join(self.output_dir, "eval.tf_record")
-        data_set = get_dataset_cls(data_set)()
-        eval_examples_num = data_set.write_example(eval_examples,
-                                                   eval_file,
-                                                   max_seq_length=max_seq_length,
-                                                   do_predict=False,
-                                                   tokenizer=self.tokenizer)
-        model_fn = model_fn_builder(config=self.model_config,
-                                    init_checkpoint=init_checkpoint,
-                                    max_seq_length=max_seq_length)
-        estimator = tf.estimator.Estimator(
-            model_fn=model_fn,
-            model_dir=self.output_dir,
-            config=self.run_config)
-        data_set = get_dataset_cls(data_set)()
+        meta_dict["model"] = {"checkpoint_path": os.path.split(estimator.latest_checkpoint())[1]}
+        self.save(save_dir, meta_dict, induction_config, bert_config)
 
-        eval_input_fn = data_set.build_file_base_input_fn(input_file=os.path.join(example_fp, "eval.tf_record"),
-                                                          model_config=self.model_config,
-                                                          batch_size=batch_size,
-                                                          max_seq_length=max_seq_length,
-                                                          is_training=False)
-        result = estimator.evaluate(input_fn=eval_input_fn, steps=None)
-        # 输出结果
-        output_eval_file = os.path.join(self.output_dir, "eval_results.txt")
-        with tf.gfile.GFile(output_eval_file, "w") as writer:
-            tf.logging.info("***** Eval results *****")
-            for key in sorted(result.keys()):
-                tf.logging.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
-
-    def predict(self, example_fp, data_set,
-                max_seq_length, predict_class_num, init_checkpoint,
-                output_dir, batch_size):
-        predict_examples = example_fp
-        predict_file = os.path.join(example_fp, "predict.tf_record")
-        data_set = get_dataset_cls(data_set)()
-
-        predict_iter_num = data_set.write_example(
-            predict_examples,
-            predict_file,
-            do_predict=True,
-            max_seq_length=max_seq_length,
-            tokenizer=self.tokenizer
-        )
-        model_fn = model_fn_builder(
-            config=self.model_config,
-            init_checkpoint=init_checkpoint,
-            max_seq_length=max_seq_length)
-        estimator = tf.estimator.Estimator(
-            model_fn=model_fn,
-            config=self.run_config
-        )
-        predict_input_fn = data_set.build_file_base_input_fn(
-            input_file=predict_file,
-            model_config=self.model_config,
-            max_seq_length=max_seq_length,
-            batch_size=batch_size,
-            is_training=False,
-            drop_remainder=False
-        )
-        tf.logging.info("***** Running prediction*****")
-        tf.logging.info("  Num iter = %d ", predict_iter_num)
-        tf.logging.info("  Batch size = %d", batch_size)
-        prediction = estimator.predict(input_fn=predict_input_fn)
-        results = [one for one in prediction]
-        result_df = parse_result(results, self.model_config, predict_class_num)
-        output_predict_file = os.path.join(output_dir, "predict_results.csv")
-        result_df.to_csv(output_predict_file, encoding="utf-8", index=False)
-
-
-def parse_result(results, model_config, predict_class_num):
-    iter_per_num = int(np.ceil(predict_class_num / model_config.c))
-    iter_num = len(results)
-    sample_num = iter_num * model_config.query_size / iter_per_num
-    result_data = {"sample_id": [], "predict": []}
-    for class_id in range(predict_class_num):
-        result_data[str(class_id)] = []
-    for sample_id in range(sample_num):
-        run_id = int(sample_id / model_config.query_size)
-        sample_index = sample_id % model_config.query_size
-        result_data["sample_id"].append(sample_id)
-        scores = []
-        for class_id in range(predict_class_num):
-            iter_id = run_id * iter_per_num + int(predict_class_num / model_config.c)
-            class_index = class_id % model_config.c
-            scores.append(results[iter_id]["relation_score"][sample_index][class_index])
-        for i, score in enumerate(scores):
-            result_data[str(i)].append(score)
-        result_data["predict"].append(np.argmax(scores))
-    return pd.DataFrame(result_data)
-
-
-# def save_result(predict_output_dir, predict_class_num, predict_run_num, results):
-#     tf.logging.info("result size = %d", len(results))
-#     # checker
-#     check_query_embedding_equal = CheckEmbedding("query embeddings")
-#     check_support_embedding_equal = CheckEmbedding("support embeddings")
-#     check_class_vector_equal = CheckEmbedding("class vector")
-#     # file path
-#     output_predict_file = os.path.join(predict_output_dir, "test_results.csv")
-#     output_embeddings_file = os.path.join(predict_output_dir, "test_embeddings.csv")
-#     output_class_vector_fp = os.path.join(predict_output_dir, "class_vector.csv")
-#     output_support_embeddings_fp = os.path.join(predict_output_dir, "support_embeddings.csv")
-#     # data
-#     support_embeddings = {"class_id": [], "sample_id": [], "embeddings": []}
-#     class_vectors = {"class_id": [], "embeddings": []}
-#     # get class vector for debug
-#     for class_id in range(predict_class_num):
-#         support_embedding = None
-#         class_vector = None
-#         for run_id in range(class_id, predict_run_num, predict_class_num):
-#             if support_embedding is None:
-#                 support_embedding = results[run_id]["support_embedding"]
-#             else:
-#                 check_support_embedding_equal(support_embedding, results[run_id]["support_embedding"])
-#             if class_vector is None:
-#                 class_vector = results[run_id]["class_vector"]
-#             else:
-#                 check_class_vector_equal(class_vector, results[run_id]["class_vector"])
-#
-#         for sample_id, embedding in enumerate(support_embedding):
-#             support_embeddings["class_id"].append(class_id)
-#             support_embeddings["sample_id"].append(sample_id)
-#             support_embeddings["embeddings"].append(embedding.tolist())
-#         class_vectors["embeddings"].append(class_vector)
-#         class_vectors["class_id"].append(class_id)
-#     # write file
-#     pd.DataFrame(class_vectors).to_csv(output_class_vector_fp, index=False)
-#     pd.DataFrame(support_embeddings).to_csv(output_support_embeddings_fp, index=False)
-#     # get query sample result
-#     result_data = {"sample_id": [], "prediction": [], "embeddings": []}
-#     for class_index in range(predict_class_num):
-#         result_data[str(class_index)] = []
-#     for sample_id in range(predict_examples_num):
-#         result_data["sample_id"].append(sample_id)
-#         probabilities = []
-#         query_embedding = None
-#         for class_id in range(predict_class_num):
-#             result_id = sample_id * predict_class_num + class_id
-#             class_probability = results[result_id]["relation_score"][0]
-#             probabilities.append(class_probability)
-#             result_data[str(class_id)].append(class_probability)
-#             if query_embedding is None:
-#                 query_embedding = results[result_id]["query_embedding"]
-#             else:
-#                 check_query_embedding_equal(results[result_id]["query_embedding"], query_embedding)
-#         result_data["embeddings"].append(query_embedding.tolist())
-#         result_data["prediction"].append(np.argmax(probabilities))
-#     result_df = pd.DataFrame(result_data)
-#     result_df[["sample_id", "embeddings"]].to_csv(output_embeddings_file, index=False)
-#     result_df.drop(columns=["embeddings"]).to_csv(output_predict_file, index=False)
-
-
-def config_setup(config_path, output_dir, save_checkpoints_steps):
-    model_config = ModelConfig.from_json_file(config_path)
-
-    run_config = tf.contrib.tpu.RunConfig(
-        cluster=None,
-        master=None,
-        model_dir=output_dir,
-        save_checkpoints_steps=save_checkpoints_steps,
-        session_config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True)))
-    return model_config, run_config
+    def save(self, save_dir, meta_dict=None, induction_config=None, bert_config=None):
+        if meta_dict is None:
+            meta_dict = {}
+        if induction_config is not None:
+            meta_dict["induction"] = {"config_path": "induction_config.json"}
+            with open(os.path.join(save_dir, "induction_config.json"), mode='w') as fd:
+                fd.write(induction_config.to_json_string())
+        if bert_config is not None:
+            meta_dict["bert"] = {"config_path": "bert_config.json"}
+            with open(os.path.join(save_dir, "bert_config.json"), mode='w') as fd:
+                fd.write(bert_config.to_json_string())
+        if meta_dict is not None:
+            shutil.copy2(meta_dict["tokenizer"]["vocab_path"], save_dir)
+            meta_dict["tokenizer"]["vocab_path"] = os.path.split(meta_dict["tokenizer"]["vocab_path"])[1]
+            config_parser = ConfigParser()
+            for section, v in meta_dict.items():
+                config_parser.add_section(str(section))
+                for option, value in v.items():
+                    config_parser.set(section, str(option), str(value))
+            with open(os.path.join(save_dir, "meta.ini"), encoding='utf-8', mode='w') as meta_fd:
+                config_parser.write(meta_fd)

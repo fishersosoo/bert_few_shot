@@ -2,7 +2,7 @@
 import os
 
 import numpy as np
-import jieba
+# import jieba
 
 from data_processing.tokenizers import BaseTokenizer
 

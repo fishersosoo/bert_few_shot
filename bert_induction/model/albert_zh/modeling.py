@@ -204,9 +204,9 @@ class BertModel(object):
         # Run the stacked transformer.
         # `sequence_output` shape = [batch_size, seq_length, hidden_size].
         ln_type=config.ln_type
-        print("ln_type:",ln_type)
+        # print("ln_type:",ln_type)
         if ln_type=='postln' or ln_type is None: # currently, base or large of albert used post-LN structure
-            print("old structure of transformer.use: transformer_model,which use post-LN")
+            # print("old structure of transformer.use: transformer_model,which use post-LN")
             self.all_encoder_layers = transformer_model(
                 input_tensor=self.embedding_output,
                 attention_mask=attention_mask,
@@ -220,7 +220,7 @@ class BertModel(object):
                 initializer_range=config.initializer_range,
                 do_return_all_layers=True)
         else: # xlarge or xxlarge of albert, used pre-LN structure
-            print("new structure of transformer.use: prelln_transformer_model,which use pre-LN")
+            # print("new structure of transformer.use: prelln_transformer_model,which use pre-LN")
             self.all_encoder_layers = prelln_transformer_model( # change by brightmart, 4th, oct, 2019. pre-Layer Normalization can converge fast and better. check paper: ON LAYER NORMALIZATION IN THE TRANSFORMER ARCHITECTURE
                 input_tensor=self.embedding_output,
                 attention_mask=attention_mask,
@@ -475,7 +475,7 @@ def embedding_lookup_factorized(input_ids, # Factorized embedding parameterizati
     # reshape to [batch_size, seq_length, 1].
 
     # 1.first project one-hot vectors into a lower dimensional embedding space of size E
-    print("embedding_lookup_factorized. factorized embedding parameterization is used.")
+    # print("embedding_lookup_factorized. factorized embedding parameterization is used.")
     if input_ids.shape.ndims == 2:
         input_ids = tf.expand_dims(input_ids, axis=[-1])  # shape of input_ids is:[ batch_size, seq_length, 1]
 

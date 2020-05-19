@@ -82,7 +82,7 @@ class EmbeddingsRecordCodec(RecordCodec):
             drop_remainder = True
 
         def input_fn(params):
-
+            batch_size=params["batch_size"]
             dataset = tf.data.TFRecordDataset(input_file)
             if is_training:
                 dataset = dataset.shuffle(buffer_size=5000)

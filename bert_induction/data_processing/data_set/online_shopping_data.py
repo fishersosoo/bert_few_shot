@@ -7,18 +7,142 @@ import pandas as pd
 import tensorflow as tf
 
 from data_processing.data_set import Dataset, log
-from model.bert import tokenization
+from model.albert_zh import tokenization
+
+
+def file_based_convert_examples_to_features_fn(training_data_path,
+                                               tokenizer,
+                                               save_dir,
+                                               max_len,
+                                               induction_config, use_existed=False):
+    """
+    构建策略，总样本条数=记录数/query_size * 2，这样大多数的记录都会出现在query里面
+    每条样本选取c个类别，按照 (c-1):1 的比例分别从c个类别中和c个类别外选取query
+    query_label 为[query_size, c]的数组，query_label[i,j]=1,if i-th record belongs to j-th class
+    Args:
+        use_existed:
+        training_data_path:
+        tokenizer:
+        save_dir:
+        max_len:
+        induction_config:
+
+    Returns:
+
+    """
+    log.info("building tf record...")
+    df = pd.read_csv(training_data_path, encoding="utf-8", index_col=None)
+    c, k, query_size = induction_config.c, induction_config.k, induction_config.query_size
+    example_num = int(len(df) / query_size * 2)
+    if os.path.exists(os.path.join(save_dir, "train.tf_record")) and use_existed:
+        log.info(str(os.path.join(save_dir, "train.tf_record")) + " existed")
+        log.info("use_existed: True")
+        return example_num
+    log.info("************")
+    log.info(str(example_num) + " examples")
+    in_class_query_num = np.ceil(query_size * (c - 1) / c).astype(int)
+    out_class_query_num = query_size - in_class_query_num
+    all_class_id = df["class"].unique()
+    with tf.python_io.TFRecordWriter(os.path.join(save_dir, "train.tf_record")) as writer:
+        for example_id in range(example_num):
+            if example_id % int(example_num / 10) == 0:
+                log.info("{percent:.2%}".format(percent=example_id / example_num))
+            features = collections.OrderedDict()
+            all_query_label = []
+            all_query_text_ids = []
+            all_query_text_mask = []
+            all_support_text_ids = []
+            all_suppoert_text_mask = []
+            # select C classes
+            selected_classes = np.random.choice(all_class_id, c, False)
+            # select query_size instances for query
+            query_instances = df[df["class"].isin(selected_classes)].sample(in_class_query_num)
+            query_instances = query_instances.append(df.sample(out_class_query_num), ignore_index=True)
+            query_instances = query_instances.sample(frac=1.0)
+            for instance_id, row in query_instances.iterrows():
+                text = row["review"]
+                text = tokenization.convert_to_unicode(text)
+                ids, mask = tokenizer.convert_to_vector(text, max_len)
+                all_query_text_ids.append(ids)
+                all_query_text_mask.append(mask)
+                all_query_label.append(np.equal(selected_classes, row["class"]).astype(int))
+            # select k instances for each class
+            for selected_class in selected_classes:
+                support_ids, support_masks = [], []
+                support_reviews = df[df["class"] == selected_class]["review"].sample(k)
+                for review in support_reviews:
+                    review = tokenization.convert_to_unicode(review)
+                    ids, mask = tokenizer.convert_to_vector(review, max_len)
+                    support_ids.append(ids)
+                    support_masks.append(mask)
+                all_support_text_ids.append(support_ids)
+                all_suppoert_text_mask.append(support_masks)
+            features["support_text_ids"] = tf.train.Feature(
+                int64_list=tf.train.Int64List(
+                    value=np.array(all_support_text_ids).reshape(-1)
+                )
+            )
+            features["support_text_mask"] = tf.train.Feature(
+                int64_list=tf.train.Int64List(
+                    value=np.array(all_suppoert_text_mask).reshape(-1)
+                )
+            )
+            features["query_text_ids"] = tf.train.Feature(
+                int64_list=tf.train.Int64List(
+                    value=np.array(all_query_text_ids).reshape(-1)
+                )
+            )
+            features["query_text_mask"] = tf.train.Feature(
+                int64_list=tf.train.Int64List(
+                    value=np.array(all_query_text_mask).reshape(-1)
+                )
+            )
+            features["query_label"] = tf.train.Feature(
+                int64_list=tf.train.Int64List(
+                    value=np.array(all_query_label).reshape(-1)
+                )
+            )
+            tf_example = tf.train.Example(features=tf.train.Features(feature=features))
+            writer.write(tf_example.SerializeToString())
+    log.info("************")
+    return example_num
 
 
 class OnlineShoppingData(Dataset):
-    def convert_examples_to_features(self, examples, label_list, params, tokenizer):
-        raise NotImplementedError()
+    """
+    数据集一共包含10种商品，选取6种商品用于训练，剩下4种商品用于测试
+    """
 
-    def build_input_fn(self, features, config, max_seq_length, is_training, drop_remainder):
-        raise NotImplementedError()
+    def build_train_test(self, source_path, output_data_dir, **kwargs):
+        log.info("building train test data...")
 
-    def __init__(self):
-        pass
+        training_fp = os.path.join(output_data_dir, "train.csv")
+        test_fp = os.path.join(output_data_dir, "test.csv")
+        if kwargs.get("use_existed", False) and \
+                os.path.exists(training_fp) and \
+                os.path.exists(test_fp):
+            return training_fp, test_fp
+
+        class_info = pd.read_csv(os.path.join(source_path, "class_info.csv"), encoding="utf-8", index_col=None)
+        source_data = pd.read_csv(os.path.join(source_path, "online_shopping_10_cats_id.csv"), encoding="utf-8",
+                                  index_col=None)
+        training_set_cat_num = kwargs.get("training_cat_num", 6)
+        training_cats = np.random.choice(class_info["cat"].unique(), training_set_cat_num, False)
+
+        def map_func(cat):
+            if cat in training_cats:
+                return 1
+            else:
+                return 0
+
+        class_info["for_training"] = class_info["cat"].map(map_func)
+        training_set = source_data[source_data["cat"].isin(training_cats)]
+        test_set = source_data[np.logical_not(source_data["cat"].isin(training_cats))]
+        training_set.to_csv(training_fp, index=False, encoding="utf-8")
+        test_set.to_csv(test_fp, index=False, encoding="utf-8")
+        class_info.to_csv(os.path.join(output_data_dir, "class_info.csv"),
+                          index=False, encoding="utf-8")
+        return training_fp, test_fp
 
     def read_raw_data_file(self, raw_fp, *args, **kwargs):
         """
@@ -49,165 +173,3 @@ class OnlineShoppingData(Dataset):
         class_info = pd.DataFrame(data=info)
         dataset = pd.merge(dataset, class_info, on=["label", "cat"])
         return dataset, class_info
-
-    def train_test_split(self, dataset, class_info, training_set_info=None, training_set_cat_num=7, *args,
-                         **kwargs):
-        if training_set_info is None:
-            log.info(
-                "No saved train test split info. select {training_set_class_num} training classes randomly.".format(
-                    training_set_class_num=training_set_cat_num))
-            training_cats = np.random.choice(class_info["cat"].unique(), training_set_cat_num, False)
-            training_set_info = class_info[class_info["cat"].isin(training_cats)]
-        else:
-            log.info(
-                "Last train test split result is used.".format(
-                    training_set_class_num=training_set_cat_num))
-        training_set = dataset[dataset["class"].isin(training_set_info["class"])]
-        test_set_info = class_info[
-            np.logical_not(class_info["class"].isin(training_set_info["class"]))]
-        test_set = dataset[np.logical_not(dataset["class"].isin(training_set_info["class"]))]
-        return training_set, training_set_info, test_set, test_set_info
-
-    def get_training_examples(self, training_set, c, k, query_per_class, training_iter_num):
-        """
-        构建元训练的训练集（支撑集和预测集）
-        Args:
-            training_iter_num:
-            query_per_class: 每次运行每个类选取多少个query
-            training_set:
-            c:
-            k:
-
-        Returns:
-            examples. numpy array, with shape [training_iter_num]
-                each example {
-                support_set_text. string array with shape [c, k]
-                query_set_text. string array with shape [c * query_per_class]
-                label: int array with shape [c * query_per_class]
-                }
-        """
-        examples = []
-        for training_iter in range(training_iter_num):
-            support_set_text = []
-            query_set = pd.DataFrame()
-            # pick c class
-            picked_classes = np.random.choice(training_set["class"].unique(), c, False)
-            for class_id, one_class in enumerate(picked_classes):
-                class_samples = training_set[training_set["class"] == one_class]
-                # select k support samples
-                support_text = class_samples.sample(k)["review"].to_list()
-                support_set_text.append(support_text)
-                # select query samples
-                query = class_samples.sample(query_per_class)
-                query["class_id"] = class_id
-                query_set = query_set.append(query, ignore_index=True)
-            query_set = query_set.sample(frac=1.)
-            example = {
-                "support_set_text": support_set_text,
-                "query_set_text": query_set["review"].to_list(),
-                "label": query_set["label"].to_list()
-            }
-            examples.append(example)
-        return examples
-
-    def get_test_examples(self, test_set, query_size, sample_per_class, c, k):
-        """
-        生成测试数据
-        先从测试集中每类选取sample_per_class个样本
-        计算所需运行的次数
-        每次运行选择c * k个样本
-        对于每个query，随机从样本中选取k个作为support set
-        Args:
-            query_size:
-            test_set:
-            sample_per_class:
-            c:
-            k:
-
-        Returns:
-            query_set_df. DataFrame with column ["cat", "label", "review", "class","class_id"]
-                class_id, range from 0 to class_num.
-            examples. numpy array, with shape [training_iter_num]
-                each example {
-                support_set_text. string array with shape [c, k]
-                query_set_text. string array with shape [query_size]
-                }
-        """
-        class_labels = test_set["class"].unique()
-        class_num = len(class_labels)
-        query_set_df = pd.DataFrame()
-        for class_id, class_label in enumerate(class_labels):
-            if len(test_set[test_set["class"] == class_label]) > sample_per_class:
-                selected_examples = test_set[test_set["class"] == class_label].sample(sample_per_class)
-            else:
-                selected_examples = test_set[test_set["class"] == class_label]
-            selected_examples["class_id"] = class_id
-            query_set_df = query_set_df.append(selected_examples, ignore_index=True)
-        query_set_df["sample_id"] = range(len(query_set_df))
-        iter_per_run = int(np.ceil(class_num / c))
-        examples = []
-        for run_id in range(int(np.ceil(len(query_set_df) / query_size))):
-            # get query text
-            run_id_start = run_id * query_size
-            run_id_end = run_id_start + query_size
-            if run_id_end <= len(query_set_df):
-                query_text = query_set_df[run_id_start:run_id_end]["review"].to_list()
-            else:
-                # padding
-                query_text = query_set_df[run_id_start:]["review"].to_list()
-                query_text.extend([""] * (query_size - len(query_text)))
-                for iter_index in range(iter_per_run):
-                    # build example
-                    example = {"query_set_text": query_text, "support_set_text": []}
-                    for class_index in range(c):
-                        class_id = iter_index * c + class_index
-                        if class_id >= class_num:
-                            # padding
-                            example["support_set_text"].append([""] * k)
-                        else:
-                            example["support_set_text"].append(
-                                test_set[test_set["class"] == class_labels[class_id]].sample(k)["review"].to_list())
-                    examples.append(example)
-        return query_set_df, examples
-
-
-def build_c_way_k_shot(raw_data_fp, c, k, query_per_class, training_iter_num, training_set_cat_num, output_dir):
-    data_name = "online_shopping_10_cats"
-    data_dir = os.path.join(output_dir, data_name, "{c}-way_{k}-shot".format(c=c, k=k))
-    if not os.path.exists(os.path.join(output_dir, data_name)):
-        os.mkdir(os.path.join(output_dir, data_name))
-    if not os.path.exists(data_dir):
-        os.mkdir(data_dir)
-    training_info_fp = os.path.join(data_dir, "train_info.csv")
-    training_info = None
-    if training_info_fp is not None and os.path.exists(training_info_fp):
-        training_info = pd.read_csv(training_info_fp, encoding="utf-8", index_col=None)
-    data_set = OnlineShoppingData()
-    data_df, class_info = data_set.read_raw_data_file(raw_data_fp)
-    training_df, training_info, test_df, test_info = data_set.train_test_split(data_df,
-                                                                               class_info,
-                                                                               training_info,
-                                                                               training_set_cat_num=training_set_cat_num)
-    if training_info_fp is not None:
-        training_info.to_csv(training_info_fp, encoding="utf-8", index=False)
-    training_examples = data_set.get_training_examples(training_df, c, k, query_per_class=query_per_class,
-                                                       training_iter_num=training_iter_num)
-    np.save(os.path.join(data_dir, "training_examples.npy"), training_examples, allow_pickle=True)
-    query_set_df, test_examples = data_set.get_test_examples(test_df, c * query_per_class, 1000, c, k)
-    np.save(os.path.join(data_dir, "test_examples.npy"), test_examples, allow_pickle=True)
-    query_set_df.to_csv(os.path.join(data_dir, "test.csv"), encoding="utf-8", index=False)
-
-
-def main():
-    build_c_way_k_shot(
-        raw_data_fp="/home/bert_few_shot/data/source/online_shopping_10_cats/online_shopping_10_cats.csv",
-        output_dir="/home/bert_few_shot/data",
-        c=2,
-        k=5,
-        query_per_class=10,
-        training_iter_num=3000,
-        training_set_cat_num=7)
-
-
-if __name__ == '__main__':
-    main()

@@ -4,7 +4,7 @@ import tensorflow as tf
 from tensorflow.python.keras import initializers
 from tensorflow.python.ops import standard_ops, gen_math_ops
 
-from model.bert.modeling import gelu
+from model.albert_zh.modeling import gelu
 from model.common.base_func import get_shape_list, squash
 
 
